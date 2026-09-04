@@ -150,6 +150,7 @@ fn render_footer(frame: &mut Frame, area: Rect, app: &App) {
             Span::raw("↑/↓ navigate · g/G top/bottom · s "),
             Span::raw(status),
             Span::raw(" · r rescan · q quit"),
+            Span::raw(if app.watching { " · live" } else { "" }),
         ]))
         .block(Block::default().borders(Borders::ALL)),
         area,

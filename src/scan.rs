@@ -65,6 +65,25 @@ pub fn build_cache_entry_at(path: &Path) -> Option<TargetEntry> {
     })
 }
 
+/// A fresh size reading for one watched directory, without a full rescan.
+#[derive(Clone, Debug)]
+pub struct Measurement {
+    /// The `target/` dir (or build-cache dir) that was re-measured.
+    pub target_dir: PathBuf,
+    pub size: u64,
+    pub last_modified: SystemTime,
+}
+
+/// Re-measure one known directory. Same math as the full scan, one path.
+pub fn measure_target(target_dir: &Path) -> Measurement {
+    let (size, last_modified) = recursive_scan_target(target_dir);
+    Measurement {
+        target_dir: target_dir.to_path_buf(),
+        size,
+        last_modified,
+    }
+}
+
 /// Scan `root` recursively for cargo projects with a `target/` dir.
 ///
 /// Mirrors `cargo-clean-all` detection logic:
