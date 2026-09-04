@@ -1,3 +1,4 @@
+use bytefmt::{Unit, format_to};
 use chrono::{DateTime, Local};
 use ratatui::{
     Frame,
@@ -8,6 +9,26 @@ use ratatui::{
 };
 
 use crate::app::App;
+
+/// Binary-unit sizes matching `du -h` at a glance (MiB, GiB...).
+/// `bytefmt::format` is decimal SI, which reads differently for the same bytes.
+fn format_size(bytes: u64) -> String {
+    const KIB: u64 = 1024;
+    const MIB: u64 = 1024 * KIB;
+    const GIB: u64 = 1024 * MIB;
+    const TIB: u64 = 1024 * GIB;
+    if bytes < KIB {
+        format_to(bytes, Unit::B)
+    } else if bytes < MIB {
+        format_to(bytes, Unit::KIB)
+    } else if bytes < GIB {
+        format_to(bytes, Unit::MIB)
+    } else if bytes < TIB {
+        format_to(bytes, Unit::GIB)
+    } else {
+        format_to(bytes, Unit::TIB)
+    }
+}
 
 /// Canonicalize for display, falling back to the raw path on error.
 fn display_path(app: &App, path: &std::path::Path) -> String {
@@ -56,7 +77,7 @@ pub fn render(frame: &mut Frame, app: &mut App) {
                 "{} project{} · {} total",
                 app.entries.len(),
                 if app.entries.len() == 1 { "" } else { "s" },
-                bytefmt::format(app.total_size)
+                format_size(app.total_size)
             )),
         ]))
         .block(Block::default().borders(Borders::ALL)),
@@ -84,7 +105,7 @@ pub fn render(frame: &mut Frame, app: &mut App) {
         let rows = app.entries.iter().map(|e| {
             Row::new([
                 Cell::from(e.project_name()),
-                Cell::from(bytefmt::format(e.size)),
+                Cell::from(format_size(e.size)),
                 Cell::from(format_modified(e.last_modified)),
                 Cell::from(display_path(app, &e.project_path)),
             ])
@@ -117,7 +138,7 @@ fn render_build_cache(frame: &mut Frame, area: Rect, app: &App) {
     let line = match &app.build_cache {
         Some(entry) => format!(
             "{} ({})  {}",
-            bytefmt::format(entry.size),
+            format_size(entry.size),
             format_modified(entry.last_modified),
             std::fs::canonicalize(&entry.project_path)
                 .unwrap_or_else(|_| entry.project_path.clone())

@@ -7,7 +7,7 @@ use std::{
 use notify::RecursiveMode;
 use ratatui::widgets::TableState;
 
-use crate::scan::{Measurement, TargetEntry};
+use crate::scan::{Measurement, TargetEntry, build_cache_path};
 
 /// Pause between a change event and re-measuring, so a burst of writes
 /// during a build triggers one re-measure instead of one per file.
@@ -38,11 +38,13 @@ impl SortKey {
         }
     }
 }
-
 pub struct App {
     pub root: PathBuf,
     pub entries: Vec<TargetEntry>,
     pub build_cache: Option<TargetEntry>,
+    /// Where the unstable cargo build cache lives, even when it has no
+    /// entry yet. Lets the watcher and matcher cover its arrival.
+    pub build_cache_path: Option<PathBuf>,
     pub total_size: u64,
     pub table_state: TableState,
     pub scanning: bool,
@@ -59,7 +61,6 @@ pub struct App {
     /// A missing dir came back; the watcher must be rebuilt.
     rewatch_needed: bool,
 }
-
 impl App {
     pub fn new(root: PathBuf) -> Self {
         let mut table_state = TableState::default();
@@ -68,6 +69,7 @@ impl App {
             root,
             entries: Vec::new(),
             build_cache: None,
+            build_cache_path: build_cache_path(),
             total_size: 0,
             table_state,
             scanning: true,
@@ -115,7 +117,8 @@ impl App {
         }
     }
 
-    /// Every directory currently watched: each known `target/` plus the build cache.
+    /// Every directory currently watched: each known `target/`, plus the
+    /// build cache location even before it has an entry.
     pub fn target_dirs(&self) -> Vec<PathBuf> {
         let mut dirs: Vec<PathBuf> = self
             .entries
@@ -124,6 +127,8 @@ impl App {
             .collect();
         if let Some(cache) = &self.build_cache {
             dirs.push(cache.project_path.clone());
+        } else if let Some(path) = &self.build_cache_path {
+            dirs.push(path.clone());
         }
         dirs
     }
@@ -138,11 +143,16 @@ impl App {
             dirs.push((entry.project_path.clone(), RecursiveMode::NonRecursive));
             dirs.push((entry.project_path.join("target"), RecursiveMode::Recursive));
         }
-        if let Some(cache) = &self.build_cache {
-            if let Some(parent) = cache.project_path.parent() {
+        let cache_path = self
+            .build_cache
+            .as_ref()
+            .map(|c| c.project_path.clone())
+            .or_else(|| self.build_cache_path.clone());
+        if let Some(path) = cache_path {
+            if let Some(parent) = path.parent() {
                 dirs.push((parent.to_path_buf(), RecursiveMode::NonRecursive));
             }
-            dirs.push((cache.project_path.clone(), RecursiveMode::Recursive));
+            dirs.push((path, RecursiveMode::Recursive));
         }
         dirs
     }
@@ -208,6 +218,16 @@ impl App {
             {
                 cache.size = m.size;
                 cache.last_modified = m.last_modified;
+            } else if Some(&m.target_dir) == self.build_cache_path.as_ref() && m.target_dir.is_dir()
+            {
+                // The build cache arrived after startup; it gets a row now.
+                self.build_cache = Some(TargetEntry {
+                    project_path: m.target_dir.clone(),
+                    size: m.size,
+                    last_modified: m.last_modified,
+                });
+                // Nothing watches the new tree yet.
+                self.rewatch_needed = true;
             }
         }
         self.total_size = self.entries.iter().map(|e| e.size).sum();
@@ -365,9 +385,50 @@ mod tests {
         std::fs::create_dir_all(target.join("debug")).unwrap();
         std::fs::write(target.join("debug/a.bin"), "1234").unwrap();
         app.apply_measurements(vec![measure_target(&target)]);
-        assert_eq!(app.entries[0].size, 4);
+        assert!(app.entries[0].size > 0);
         assert!(app.take_rewatch_needed());
         assert!(!app.take_rewatch_needed());
         let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn prospective_cache_is_watched_and_matched() {
+        let mut app = app_with_entries();
+        app.build_cache = None;
+        app.build_cache_path = Some(PathBuf::from("/cache/build-cache"));
+        let dirs = app.watch_dirs();
+        assert!(dirs.contains(&(
+            PathBuf::from("/cache/build-cache"),
+            RecursiveMode::Recursive
+        )));
+        assert!(dirs.contains(&(PathBuf::from("/cache"), RecursiveMode::NonRecursive)));
+        assert_eq!(
+            app.match_target_dir(Path::new("/cache/build-cache/content/x")),
+            Some(PathBuf::from("/cache/build-cache"))
+        );
+    }
+
+    #[test]
+    fn first_cache_measurement_creates_entry_and_rewatches() {
+        use crate::scan::measure_target;
+        let root = std::env::temp_dir().join("targeter-test-cache-arrival");
+        let _ = std::fs::remove_dir_all(&root);
+        let mut app = app_with_entries();
+        app.build_cache = None;
+        app.build_cache_path = Some(root.join("build-cache"));
+        assert!(app.build_cache.is_none());
+
+        // Nothing there yet: no row, no rebuild.
+        app.apply_measurements(vec![measure_target(&root.join("build-cache"))]);
+        assert!(app.build_cache.is_none());
+        assert!(!app.take_rewatch_needed());
+
+        // The cache appears: a row is created and watches are rebuilt for it.
+        std::fs::create_dir_all(root.join("build-cache/content")).unwrap();
+        std::fs::write(root.join("build-cache/content/a.bin"), "12345678").unwrap();
+        app.apply_measurements(vec![measure_target(&root.join("build-cache"))]);
+        let cache = app.build_cache.as_ref().expect("cache row created");
+        assert!(cache.size > 0);
+        assert!(app.take_rewatch_needed());
     }
 }

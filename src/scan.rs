@@ -1,4 +1,5 @@
 use std::{
+    collections::HashSet,
     path::{Path, PathBuf},
     thread,
     time::SystemTime,
@@ -6,12 +7,15 @@ use std::{
 
 use crossbeam_channel::Sender;
 
+#[cfg(unix)]
+use std::os::unix::fs::MetadataExt;
+
 /// A Rust project with a `target/` directory on disk.
 #[derive(Clone, Debug)]
 pub struct TargetEntry {
     /// Project root (parent of `target/`).
     pub project_path: PathBuf,
-    /// Recursive size of `target/` in bytes.
+    /// Disk usage of `target/` in bytes, `du` semantics.
     pub size: u64,
     /// Most recently modified mtime found under `target/`.
     pub last_modified: SystemTime,
@@ -189,29 +193,78 @@ fn find_projects_task(job: Job, results: &Sender<PathBuf>) {
     }
 }
 
-/// Recursively sum file sizes and track the newest mtime.
+/// Recursively measure disk usage and track the newest mtime.
 ///
-/// Same semantics as `cargo-clean-all`: missing paths and symlinks count as
-/// empty/epoch; unreadable subtrees contribute nothing.
+/// Same semantics as `du`: each inode counts once no matter how many links
+/// point at it (cargo hardlinks artifacts all over `target/`, so a naive
+/// size sum overstates real disk use), and sizes are allocated blocks rather
+/// than apparent lengths (so sparse files count what they occupy).
+/// Missing paths and symlinks count as empty/epoch; unreadable subtrees
+/// contribute nothing.
 fn recursive_scan_target<T: AsRef<Path>>(path: T) -> (u64, SystemTime) {
-    let path = path.as_ref();
+    let mut seen = HashSet::new();
+    scan_inner(path.as_ref(), &mut seen)
+}
+
+/// Inode identity for hardlink dedup. Only Unix exposes stable ids;
+/// elsewhere every file counts (the previous behavior).
+#[cfg(unix)]
+fn inode_id(md: &std::fs::Metadata) -> Option<(u64, u64)> {
+    Some((md.dev(), md.ino()))
+}
+
+#[cfg(not(unix))]
+fn inode_id(_md: &std::fs::Metadata) -> Option<(u64, u64)> {
+    None
+}
+
+/// Allocated bytes, like `du`. Falls back to apparent length where block
+/// counts are unavailable.
+#[cfg(unix)]
+fn disk_usage(md: &std::fs::Metadata) -> u64 {
+    md.blocks() * 512
+}
+
+#[cfg(not(unix))]
+fn disk_usage(md: &std::fs::Metadata) -> u64 {
+    md.len()
+}
+
+fn scan_inner(path: &Path, seen: &mut HashSet<(u64, u64)>) -> (u64, SystemTime) {
     let default = (0, SystemTime::UNIX_EPOCH);
 
     if !path.exists() || path.is_symlink() {
         return default;
     }
-
-    match (path.is_file(), path.metadata()) {
-        (true, Ok(md)) => (md.len(), md.modified().unwrap_or(default.1)),
-        _ => path
-            .read_dir()
-            .map(|rd| {
-                rd.filter_map(|it| it.ok().map(|it| it.path()))
-                    .map(recursive_scan_target)
-                    .fold(default, |(size, newest), (s, m)| (size + s, newest.max(m)))
-            })
-            .unwrap_or(default),
+    let md = match path.metadata() {
+        Ok(md) => md,
+        Err(_) => return default,
+    };
+    // Second link to a counted inode: `du` counts it zero times.
+    if let Some(id) = inode_id(&md)
+        && !seen.insert(id)
+    {
+        return default;
     }
+
+    let newest = md.modified().unwrap_or(default.1);
+    if !md.is_dir() {
+        return if md.is_file() {
+            (disk_usage(&md), newest)
+        } else {
+            default
+        };
+    }
+    // Directories contribute their own blocks too, like `du`.
+    let (mut total, mut latest) = (disk_usage(&md), newest);
+    if let Ok(rd) = path.read_dir() {
+        for child in rd.filter_map(|it| it.ok().map(|it| it.path())) {
+            let (size, mtime) = scan_inner(&child, seen);
+            total += size;
+            latest = latest.max(mtime);
+        }
+    }
+    (total, latest)
 }
 
 #[cfg(test)]
@@ -245,24 +298,30 @@ mod tests {
 
         assert_eq!(entries.len(), 1);
         assert_eq!(entries[0].project_path, root.join("proj-a"));
-        assert_eq!(entries[0].size, 5);
+        // Disk usage, not apparent length: blocks for the file plus its dirs.
+        assert!(entries[0].size >= 5);
         assert!(entries[0].last_modified > SystemTime::UNIX_EPOCH);
         let _ = fs::remove_dir_all(&root);
     }
-
+    // Dedup relies on inode identity, which only Unix exposes.
+    #[cfg(unix)]
     #[test]
-    fn size_sums_files_and_newest_mtime_wins() {
-        let root = std::env::temp_dir().join("targeter-test-size");
+    fn hardlinked_file_counts_once_like_du() {
+        let root = std::env::temp_dir().join("targeter-test-hardlink");
         let _ = fs::remove_dir_all(&root);
         let target = root.join("target");
         fs::create_dir_all(&target).unwrap();
         fs::write(target.join("a.bin"), "1234").unwrap();
         fs::write(target.join("b.bin"), "123456").unwrap();
 
-        let (size, mtime) = recursive_scan_target(&target);
-        assert_eq!(size, 10);
+        let (alone, _) = recursive_scan_target(&target);
+        assert!(alone > 0);
+        // Second link to the same inode: `du` counts nothing extra.
+        fs::hard_link(target.join("a.bin"), target.join("a-link.bin")).unwrap();
+        let (deduped, mtime) = recursive_scan_target(&target);
+        assert_eq!(deduped, alone);
         assert!(mtime > SystemTime::UNIX_EPOCH);
-        // Missing path degrades to empty, mirroring cargo-clean-all.
+        // Missing path degrades to empty.
         assert_eq!(
             recursive_scan_target(root.join("nope")),
             (0, SystemTime::UNIX_EPOCH)
@@ -301,7 +360,7 @@ mod tests {
 
         let entry = build_cache_entry_at(&root.join("build-cache")).expect("cache dir exists");
         assert_eq!(entry.project_path, root.join("build-cache"));
-        assert_eq!(entry.size, 8);
+        assert!(entry.size >= 8);
         assert!(entry.last_modified > SystemTime::UNIX_EPOCH);
         let _ = fs::remove_dir_all(&root);
     }
