@@ -4,3 +4,10 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
+ratatui = "0.29"
+crossterm = "0.28"
+eyre = "0.6"
+chrono = "0.4"
+bytefmt = "0.1"
+crossbeam-channel = "0.5"
+num_cpus = "1.16"
