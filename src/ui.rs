@@ -30,7 +30,8 @@ fn format_modified(last_modified: std::time::SystemTime) -> String {
 
 pub fn render(frame: &mut Frame, app: &mut App) {
     let area = frame.area();
-    let [header_area, table_area, footer_area] = Layout::vertical([
+    let [header_area, cache_area, table_area, footer_area] = Layout::vertical([
+        Constraint::Length(3),
         Constraint::Length(3),
         Constraint::Min(0),
         Constraint::Length(3),
@@ -61,6 +62,7 @@ pub fn render(frame: &mut Frame, app: &mut App) {
         .block(Block::default().borders(Borders::ALL)),
         header_area,
     );
+    render_build_cache(frame, cache_area, app);
 
     if app.scanning {
         frame.render_widget(
@@ -107,6 +109,34 @@ pub fn render(frame: &mut Frame, app: &mut App) {
     }
 
     render_footer(frame, footer_area, app);
+}
+
+/// Pinned row for the unstable cargo build cache. It lives outside the scan
+/// root, so it gets its own section instead of a table row.
+fn render_build_cache(frame: &mut Frame, area: Rect, app: &App) {
+    let line = match &app.build_cache {
+        Some(entry) => format!(
+            "{} ({})  {}",
+            bytefmt::format(entry.size),
+            format_modified(entry.last_modified),
+            std::fs::canonicalize(&entry.project_path)
+                .unwrap_or_else(|_| entry.project_path.clone())
+                .display()
+        ),
+        None if app.scanning => "Measuring…".to_string(),
+        None => match crate::scan::build_cache_path() {
+            Some(path) => format!("not present: {}", path.display()),
+            None => "no cargo home found".to_string(),
+        },
+    };
+    frame.render_widget(
+        Paragraph::new(line).block(
+            Block::default()
+                .borders(Borders::ALL)
+                .title("cargo build-cache (unstable)"),
+        ),
+        area,
+    );
 }
 
 fn render_footer(frame: &mut Frame, area: Rect, app: &App) {

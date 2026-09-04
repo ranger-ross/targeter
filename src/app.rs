@@ -33,6 +33,7 @@ impl SortKey {
 pub struct App {
     pub root: PathBuf,
     pub entries: Vec<TargetEntry>,
+    pub build_cache: Option<TargetEntry>,
     pub total_size: u64,
     pub table_state: TableState,
     pub scanning: bool,
@@ -46,6 +47,7 @@ impl App {
         Self {
             root,
             entries: Vec::new(),
+            build_cache: None,
             total_size: 0,
             table_state,
             scanning: true,
@@ -53,10 +55,11 @@ impl App {
         }
     }
 
-    pub fn set_entries(&mut self, mut entries: Vec<TargetEntry>) {
+    pub fn set_entries(&mut self, mut entries: Vec<TargetEntry>, build_cache: Option<TargetEntry>) {
         self.sort_entries(&mut entries);
         self.total_size = entries.iter().map(|e| e.size).sum();
         self.entries = entries;
+        self.build_cache = build_cache;
         self.scanning = false;
         // Keep selection in bounds after rescan.
         if self.entries.is_empty() {

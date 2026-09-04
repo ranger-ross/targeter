@@ -58,9 +58,9 @@ fn run(terminal: &mut Terminal<CrosstermBackend<std::io::Stdout>>, root: PathBuf
 
         // Pick up a finished background scan without blocking the UI.
         if let Some(rx) = scan_rx.as_ref()
-            && let Ok(entries) = rx.try_recv()
+            && let Ok((entries, build_cache)) = rx.try_recv()
         {
-            app.set_entries(entries);
+            app.set_entries(entries, build_cache);
             scan_rx = None;
         }
 
@@ -89,12 +89,14 @@ fn run(terminal: &mut Terminal<CrosstermBackend<std::io::Stdout>>, root: PathBuf
 }
 
 /// Run the recursive scan off the UI thread so the TUI stays responsive.
-fn spawn_scan(root: &Path) -> Option<mpsc::Receiver<Vec<TargetEntry>>> {
+/// The build-cache measurement rides along so the UI gets both at once.
+fn spawn_scan(root: &Path) -> Option<mpsc::Receiver<(Vec<TargetEntry>, Option<TargetEntry>)>> {
     let root = root.to_path_buf();
     let (tx, rx) = mpsc::channel();
     std::thread::spawn(move || {
         let entries = scan::scan(&root);
-        let _ = tx.send(entries);
+        let build_cache = scan::build_cache_entry();
+        let _ = tx.send((entries, build_cache));
     });
     Some(rx)
 }
