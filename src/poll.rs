@@ -25,7 +25,8 @@ const UNKNOWN_INTERVAL: Duration = Duration::from_secs(10);
 ///
 /// so the six-poll count wins; shout if 30s was meant.)
 const UNKNOWN_QUIET_LIMIT: u32 = 6;
-/// Active dirs (recently changed) poll fastest and never relax.
+/// Active dirs (recently changed — or deleted, so a rebuild is caught
+/// fast) poll fastest and never relax.
 const ACTIVE_INTERVAL: Duration = Duration::from_secs(3);
 /// Semi-dormant dirs proved idle once; poll slowly.
 const SEMI_INTERVAL: Duration = Duration::from_secs(30);
@@ -169,10 +170,13 @@ impl Poller {
             else {
                 continue;
             };
-            // A deleted dir measures no timestamp; don't mistake its
-            // zeroed size for activity, but keep the old baseline so
-            // recreation wakes it to Active.
+            // Deleted: go Active so a rebuild is caught within one short
+            // interval. The zeroed size is not new activity, so the old
+            // baseline is kept for the recreated tree to compare against.
+            // (Measuring a missing path is just an `exists` check, so the
+            // 3s cadence costs nothing while it stays gone.)
             if m.last_modified.is_none() {
+                t.tier = Tier::Active;
                 t.next_due = now + t.tier.interval();
                 continue;
             }
@@ -341,7 +345,7 @@ mod tests {
     }
 
     #[test]
-    fn missing_dir_holds_tier_until_recreation() {
+    fn missing_dir_goes_active_until_recreation() {
         // `proj-gone` is tracked but never created on disk.
         let root = test_root();
         let mut app = App::new(root.clone());
@@ -357,11 +361,18 @@ mod tests {
         let mut poller = Poller::new();
         let now = Instant::now();
         poller.reset_at(&app, now);
-        // Reads as empty but must not count as activity.
+        // Deletion promotes to Active so a rebuild is caught fast, and
+        // the row zeroes with no timestamp.
         poller.apply(vec![missing_measurement("proj-gone")], &mut app, now);
         assert_eq!(app.entries[0].size, 0);
         assert!(app.entries[0].last_modified.is_none());
-        assert_eq!(tier_of(&poller, "proj-gone"), Tier::Unknown(0));
+        assert_eq!(tier_of(&poller, "proj-gone"), Tier::Active);
+        // Still gone: stays Active on the fast cadence, baseline kept.
+        poller.apply(vec![missing_measurement("proj-gone")], &mut app, now);
+        assert_eq!(tier_of(&poller, "proj-gone"), Tier::Active);
+        // Rebuild differs from the kept baseline: still Active, resurveyed.
+        poller.apply(vec![measurement("proj-gone", 50)], &mut app, now);
+        assert_eq!(tier_of(&poller, "proj-gone"), Tier::Active);
     }
 
     #[test]
