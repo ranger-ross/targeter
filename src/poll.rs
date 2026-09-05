@@ -20,14 +20,12 @@ use crate::{
 /// Unknown dirs poll fast until they prove idle.
 const UNKNOWN_INTERVAL: Duration = Duration::from_secs(10);
 /// Consecutive unchanged Unknown polls before relaxing to SemiDormant.
-/// Six 10s polls cover about 60s idle.
 const UNKNOWN_QUIET_LIMIT: u32 = 6;
-/// Active dirs (recently changed, or deleted so a rebuild is caught fast)
-/// poll fastest and never relax.
+/// Changed or deleted dirs poll fastest and never relax.
 const ACTIVE_INTERVAL: Duration = Duration::from_secs(3);
 /// Semi-dormant dirs proved idle once. They poll slowly.
 const SEMI_INTERVAL: Duration = Duration::from_secs(30);
-/// Consecutive unchanged SemiDormant polls before going Dormant (3 min).
+/// Consecutive unchanged SemiDormant polls before going Dormant.
 const SEMI_QUIET_LIMIT: u32 = 6;
 /// Dormant dirs poll slowest until a change wakes them.
 const DORMANT_INTERVAL: Duration = Duration::from_secs(60);
@@ -60,9 +58,6 @@ struct Tracked {
 }
 
 /// Owns poll tiers and the background re-measure pipeline.
-///
-/// One measure job runs at a time. A tick during a run waits for the next
-/// frame, so jobs cannot pile up.
 pub struct Poller {
     tracked: Vec<Tracked>,
     measure_tx: mpsc::Sender<Vec<Measurement>>,
@@ -81,9 +76,7 @@ impl Poller {
         }
     }
 
-    /// Rebuild tracking from fresh scan results. Tiers restart at Unknown
-    /// with the scan as baseline, so activity is redetected within one
-    /// interval. Stale in-flight results from before the rescan are dropped.
+    /// Rebuild tracking from fresh scan results.
     pub fn reset(&mut self, app: &App) {
         self.reset_at(app, Instant::now());
     }
@@ -155,8 +148,7 @@ impl Poller {
             .collect()
     }
 
-    /// Fold finished measurements into tiers and the app. `now` is injected
-    /// so tier transitions are testable without sleeping.
+    /// Fold finished measurements into tiers and the app.
     fn apply(&mut self, measurements: Vec<Measurement>, app: &mut App, now: Instant) {
         app.apply_measurements(&measurements);
         for m in measurements {
@@ -235,7 +227,6 @@ mod tests {
         app
     }
 
-    /// A deleted dir measures zero size with no timestamp.
     fn missing_measurement(proj: &str) -> Measurement {
         Measurement {
             target_dir: target_dir(proj),

@@ -9,18 +9,14 @@ pub struct App {
     pub root: PathBuf,
     pub entries: Vec<TargetEntry>,
     pub build_cache: Option<TargetEntry>,
-    /// Unstable cargo build cache location. Set even with no entry yet
-    /// so polling covers its arrival.
     pub build_cache_path: Option<PathBuf>,
     pub total_size: u64,
     pub table_state: TableState,
     pub scanning: bool,
     pub sort: SortKey,
-    /// Load start. The shimmer band reads wall-clock time.
     pub loading_start: Instant,
     /// True while the user is typing a filter pattern.
     pub filtering: bool,
-    /// Raw filter text. Compiles live. Invalid input keeps the last good pattern.
     pub filter_text: String,
     /// Last filter that compiled. Matches against name and path.
     pub filter_regex: Option<Regex>,
@@ -73,9 +69,7 @@ impl App {
         self.entries = entries;
     }
 
-    /// Replace the filter text and compile it live. An invalid pattern
-    /// keeps the last good one and records the error instead.
-    /// Selection restarts at the top of the narrowed list.
+    /// Replace the filter text; an invalid pattern keeps the last good one.
     pub fn set_filter(&mut self, text: String) {
         self.filter_text = text;
         if self.filter_text.is_empty() {
@@ -101,7 +95,6 @@ impl App {
         self.top();
     }
 
-    /// Indices into `entries` that pass the filter, in order.
     pub fn visible_indices(&self) -> Vec<usize> {
         match &self.filter_regex {
             None => (0..self.entries.len()).collect(),
@@ -117,8 +110,6 @@ impl App {
         }
     }
 
-    /// Apply fresh measurements. Selection stays on the same project even
-    /// when the new sizes reorder the table.
     #[tracing::instrument(skip_all)]
     pub fn apply_measurements(&mut self, measurements: &[Measurement]) {
         if measurements.is_empty() {

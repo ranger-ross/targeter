@@ -15,15 +15,13 @@ use std::{
     time::SystemTime,
 };
 
-/// A Rust project with a `target/` directory on disk.
 #[derive(Clone, Debug)]
 pub struct TargetEntry {
     /// Project root (parent of `target/`).
     pub project_path: PathBuf,
     /// Disk usage of `target/` in bytes, `du` semantics.
     pub size: u64,
-    /// Most recently modified mtime found under `target/`, or `None`
-    /// while the dir is deleted (renders as "deleted", sorts last).
+    /// Newest mtime under `target/`, or `None` while deleted.
     pub last_modified: Option<SystemTime>,
 }
 
@@ -37,8 +35,6 @@ impl TargetEntry {
     }
 }
 
-/// Resolve the scan root to an absolute path, so displayed paths and poller
-/// measurements stay absolute however the program was invoked.
 pub fn resolve_root(raw: &Path) -> PathBuf {
     std::fs::canonicalize(raw).unwrap_or_else(|_| raw.to_path_buf())
 }

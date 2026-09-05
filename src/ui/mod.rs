@@ -125,8 +125,7 @@ pub fn render(frame: &mut Frame, app: &mut App) {
     render_footer(frame, footer_area, app);
 }
 
-/// Binary-unit sizes matching `du -h` (MiB, GiB...). Avoids `bytefmt::format`
-/// because it uses decimal SI.
+/// Binary-unit sizes matching `du -h`.
 fn format_size(bytes: u64) -> String {
     const KIB: u64 = 1024;
     const MIB: u64 = 1024 * KIB;
@@ -145,8 +144,7 @@ fn format_size(bytes: u64) -> String {
     }
 }
 
-/// Absolute path for display, canonicalized, with `$HOME` contracted to `~`.
-/// Falls back to the raw path when canonicalization fails.
+/// Absolute path for display, with `$HOME` contracted to `~`.
 fn display_path(path: &std::path::Path) -> String {
     let abs = std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
     if let Ok(home) = std::env::var("HOME")
@@ -170,8 +168,7 @@ fn format_modified(last_modified: std::time::SystemTime) -> String {
     format_modified_at(last_modified, std::time::SystemTime::now())
 }
 
-/// Testable core: injected `now` frees boundary tests from the clock.
-/// Future timestamps (clock skew, just-written files) read as "now".
+/// Injected `now` frees boundary tests from the clock.
 fn format_modified_at(last_modified: std::time::SystemTime, now: std::time::SystemTime) -> String {
     format_age(now.duration_since(last_modified).unwrap_or_default())
 }
@@ -187,8 +184,7 @@ fn format_age(age: std::time::Duration) -> String {
     timeago::Formatter::new().convert(age)
 }
 
-/// Timestamp for display. A deleted dir has no mtime, so it reads as
-/// "deleted" instead of "56 years ago".
+/// Timestamp for display; deleted dirs read as "deleted".
 fn format_modified_opt(last_modified: Option<std::time::SystemTime>) -> String {
     match last_modified {
         Some(t) => format_modified(t),
@@ -196,8 +192,6 @@ fn format_modified_opt(last_modified: Option<std::time::SystemTime>) -> String {
     }
 }
 
-/// Pinned row for the unstable cargo build cache. It lives outside the scan
-/// root, so it gets its own section instead of a table row.
 fn render_build_cache(frame: &mut Frame, area: Rect, app: &App) {
     let line = match &app.build_cache {
         Some(entry) => format!(

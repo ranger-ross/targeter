@@ -12,15 +12,12 @@ use std::os::unix::fs::MetadataExt;
 /// A fresh size reading for one watched directory, without a full rescan.
 #[derive(Clone, Debug)]
 pub struct Measurement {
-    /// The `target/` dir (or build-cache dir) that was re-measured.
     pub target_dir: PathBuf,
     pub size: u64,
-    /// Newest mtime found, or `None` when the dir is gone (deleted or
-    /// never arrived). `None` never counts as activity.
+    /// Newest mtime found, or `None` when the dir is gone.
     pub last_modified: Option<SystemTime>,
 }
 
-/// Re-measure one known directory with the full scan math for one path.
 #[tracing::instrument(skip_all, fields(target = %target_dir.display()))]
 pub fn measure_target(target_dir: &Path) -> Measurement {
     let (size, last_modified) = recursive_scan_target(target_dir);
@@ -35,8 +32,6 @@ pub fn measure_target(target_dir: &Path) -> Measurement {
 ///
 /// Size matches `du`: allocated-block sizes, each inode counted once. Missing
 /// paths measure empty with no timestamp, unreadable subtrees add nothing.
-/// Symlinks count their own inode blocks but are never followed, so linked
-/// trees cannot loop or double-count.
 #[tracing::instrument(skip_all, fields(path = %path.as_ref().display()))]
 pub(super) fn recursive_scan_target<T: AsRef<Path>>(path: T) -> (u64, Option<SystemTime>) {
     let path = path.as_ref();
@@ -74,7 +69,6 @@ pub(super) fn recursive_scan_target<T: AsRef<Path>>(path: T) -> (u64, Option<Sys
     (total, Some(newest))
 }
 
-/// One entry's contribution. `mtime_ns` saturates pre-epoch times to zero.
 struct EntryRec {
     #[cfg(unix)]
     dev: u64,

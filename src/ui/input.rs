@@ -9,7 +9,6 @@ pub enum Action {
     Rescan,
 }
 
-/// Route a key press to the app. Filtering mode consumes edits.
 pub fn handle_key(app: &mut App, key: KeyEvent) -> Action {
     // Ctrl+C always quits, even mid-filter.
     if key.code == KeyCode::Char('c') && key.modifiers == KeyModifiers::CONTROL {

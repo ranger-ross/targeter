@@ -10,12 +10,7 @@ use super::{TargetEntry, measure::recursive_scan_target};
 
 /// Scan `root` recursively for cargo projects with a `target/` dir.
 ///
-/// A project holds both `Cargo.toml` and a real `target/` subdir. `.git`
-/// and `.cargo` never descend, nor does a project's own `target/`.
-/// Everything else honors ignore files, so ignored subtrees prune without
-/// a single `stat`. `target/` itself stays visible through direct probes:
-/// usually gitignored, but a project still reports when its `target/`
-/// exists on disk.
+/// A project holds both `Cargo.toml` and a real `target/` subdir.
 #[tracing::instrument(skip_all, fields(root = %root.display()))]
 pub fn scan(root: &Path) -> Vec<TargetEntry> {
     let projects = Mutex::new(Vec::new());
@@ -54,7 +49,6 @@ pub fn scan(root: &Path) -> Vec<TargetEntry> {
 }
 
 /// Whether the walker yields an entry and descends into it.
-/// Rejecting a directory prunes its whole subtree.
 fn keep_entry(entry: &DirEntry) -> bool {
     // Never prune the scan root itself.
     if entry.depth() == 0 {
@@ -76,7 +70,6 @@ fn is_project_target(dir: &Path) -> bool {
         .unwrap_or(false)
 }
 
-/// Record `entry` when it is a project dir. Never blocks the walk.
 fn visit_entry(
     result: Result<DirEntry, ignore::Error>,
     projects: &Mutex<Vec<PathBuf>>,
@@ -98,8 +91,7 @@ fn visit_entry(
     WalkState::Continue
 }
 
-/// Whether `path` is a real `target/` dir. Probed directly so gitignored
-/// build output still measures. Symlinks never count.
+/// Whether `path` is a real `target/` dir. Symlinks never count.
 fn is_target_dir(path: &Path) -> bool {
     std::fs::symlink_metadata(path).is_ok_and(|md| md.is_dir())
 }
