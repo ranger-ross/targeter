@@ -1,10 +1,10 @@
 use bytefmt::{Unit, format_to};
 use ratatui::{
     Frame,
-    layout::{Constraint, Layout, Rect},
+    layout::{Alignment, Constraint, Layout, Rect},
     style::{Color, Modifier, Style},
-    text::{Line, Span},
-    widgets::{Cell, Paragraph, Row, Table},
+    text::{Line, Span, Text},
+    widgets::{Cell, HighlightSpacing, Paragraph, Row, Table},
 };
 
 use crate::app::App;
@@ -96,19 +96,50 @@ pub fn render(frame: &mut Frame, app: &mut App) {
             table_area,
         );
     } else {
-        let header = Row::new(["Project", "Size", "Modified", "Path"])
-            .height(1)
-            .style(Style::default().fg(crate::ui::theme::MUTED));
+        let selected = app.table_state.selected();
+        let header = Row::new([
+            Cell::from("PROJECT"),
+            Cell::from(right_text("SIZE")),
+            Cell::from("MODIFIED"),
+            Cell::from("PATH"),
+        ])
+        .height(1)
+        .style(
+            Style::default()
+                .fg(crate::ui::theme::MUTED)
+                .add_modifier(Modifier::BOLD),
+        );
 
-        let rows = visible.iter().filter_map(|&i| app.entries.get(i)).map(|e| {
-            Row::new([
-                Cell::from(e.project_name()),
-                Cell::from(format_size_opt(e.size)),
-                Cell::from(format_modified_entry(e)),
-                Cell::from(display_path(&e.project_path)),
-            ])
-            .height(1)
-        });
+        let rows = visible
+            .iter()
+            .enumerate()
+            .filter_map(|(pos, &i)| {
+                app.entries.get(i).map(|e| {
+                    let name = if Some(pos) == selected {
+                        Text::styled(
+                            e.project_name(),
+                            Style::default().add_modifier(Modifier::BOLD),
+                        )
+                    } else {
+                        Text::from(e.project_name())
+                    };
+                    let mut row = Row::new([
+                        Cell::from(name),
+                        Cell::from(right_text(format_size_opt(e.size))),
+                        Cell::from(format_modified_entry(e)),
+                        Cell::from(Text::styled(
+                            display_path(&e.project_path),
+                            Style::default().fg(crate::ui::theme::DIM),
+                        )),
+                    ])
+                    .height(1);
+                    // Deleted rows sink visually too.
+                    if e.size.is_some() && e.last_modified.is_none() {
+                        row = row.style(Style::default().fg(crate::ui::theme::DIM));
+                    }
+                    row
+                })
+            });
         let widths = [
             Constraint::Max(24),
             Constraint::Length(12),
@@ -118,9 +149,19 @@ pub fn render(frame: &mut Frame, app: &mut App) {
         let table = Table::new(rows, widths)
             .header(header)
             .block(crate::ui::theme::card_plain())
-            .row_highlight_style(crate::ui::theme::selected());
+            .column_spacing(2)
+            .row_highlight_style(crate::ui::theme::selected())
+            .highlight_symbol("▶ ")
+            .highlight_spacing(HighlightSpacing::Always);
         frame.render_stateful_widget(table, table_area, &mut app.table_state);
     }
+
+/// Right-aligned cell text, for the Size column and its header.
+fn right_text(text: impl Into<String>) -> Text<'static> {
+    let mut t = Text::from(text.into());
+    t.alignment = Some(Alignment::Right);
+    t
+}
 
     render_footer(frame, footer_area, app);
 }
@@ -247,7 +288,7 @@ fn render_footer(frame: &mut Frame, area: Rect, app: &App) {
     .areas(inner);
     frame.render_widget(Paragraph::new(Line::from(left)), left_area);
     frame.render_widget(
-        Paragraph::new(Line::from(right)).alignment(ratatui::layout::Alignment::Right),
+        Paragraph::new(Line::from(right)).alignment(Alignment::Right),
         right_area,
     );
 }
@@ -414,5 +455,30 @@ mod tests {
             assert!(text.contains(want), "missing {want}");
         }
         assert!(!text.contains("(s)"), "duplicated sort key hint");
+    }
+
+    #[test]
+    fn table_shows_uppercase_header_and_selection_marker() {
+        use ratatui::{Terminal, backend::TestBackend};
+        let mut app = App::new(std::path::PathBuf::from("."));
+        app.set_discovered(vec![
+            std::path::PathBuf::from("proj-a"),
+            std::path::PathBuf::from("proj-b"),
+        ]);
+        app.finish_scan(None);
+        let backend = TestBackend::new(100, 24);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal.draw(|f| render(f, &mut app)).unwrap();
+        let buf = terminal.backend().buffer().clone();
+        let mut text = String::new();
+        for y in 0..buf.area.height {
+            for x in 0..buf.area.width {
+                text.push_str(buf[(x, y)].symbol());
+            }
+            text.push('\n');
+        }
+        for want in ["PROJECT", "SIZE", "MODIFIED", "PATH", "▶"] {
+            assert!(text.contains(want), "missing {want}");
+        }
     }
 }
