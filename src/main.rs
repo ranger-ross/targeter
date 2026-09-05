@@ -1,7 +1,3 @@
-mod app;
-mod scan;
-mod ui;
-
 use std::{
     path::{Path, PathBuf},
     sync::mpsc,
@@ -19,15 +15,16 @@ use ratatui::Terminal;
 use ratatui::backend::CrosstermBackend;
 
 use app::App;
+use args::Args;
 use scan::{Measurement, TargetEntry};
+
+mod app;
+mod args;
+mod scan;
+mod ui;
+
 fn main() -> Result<()> {
-    // eyre needs no global init; `Result` + `bail!`/`wrap_err` is the whole setup.
-    // MVP: scan root is cwd, optionally overridden by a single CLI arg.
-    // Full config/flags come later; keep arg parsing trivial on purpose.
-    let root = std::env::args()
-        .nth(1)
-        .map(PathBuf::from)
-        .unwrap_or_else(|| PathBuf::from("."));
+    let Args { root } = Args::new();
     if !root.is_dir() {
         eyre::bail!("scan root is not a directory: {}", root.display());
     }
