@@ -7,7 +7,7 @@ edition = "2024"
 ratatui = "0.30"
 crossterm = "0.29"
 eyre = "0.6"
-chrono = "0.4"
+timeago = { version = "0.6", default-features = false }
 bytefmt = "0.1"
 notify = "8"
 num_cpus = "1.16"

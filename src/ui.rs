@@ -1,5 +1,4 @@
 use bytefmt::{Unit, format_to};
-use chrono::{DateTime, Local};
 use ratatui::{
     Frame,
     layout::{Constraint, Layout, Rect},
@@ -149,10 +148,30 @@ fn display_path(path: &std::path::Path) -> String {
     abs.display().to_string()
 }
 
+/// Relative age ("now", "30 seconds ago", "1 minute ago", "yesterday", ...).
+/// Bucketing and pluralization come from the `timeago` crate, with two
+/// overrides: under 5s reads as "now", and 24–48h reads as "yesterday"
+/// instead of the crate's "1 day ago". The 24–48h window is exact so the
+/// phrase "1 day ago" can never surface alongside "yesterday".
 fn format_modified(last_modified: std::time::SystemTime) -> String {
-    let dt: DateTime<Local> = last_modified.into();
-    // Same format as `cargo-clean-all`.
-    dt.format("%Y-%m-%d %H:%M").to_string()
+    format_modified_at(last_modified, std::time::SystemTime::now())
+}
+
+/// Testable core: `now` injected so boundary cases don't depend on the clock.
+/// Future timestamps (clock skew, just-written files) read as "now".
+fn format_modified_at(last_modified: std::time::SystemTime, now: std::time::SystemTime) -> String {
+    format_age(now.duration_since(last_modified).unwrap_or_default())
+}
+
+/// Pure duration rendering; takes a fixed age so tests are deterministic.
+fn format_age(age: std::time::Duration) -> String {
+    if age.as_secs() < 5 {
+        return "now".to_string();
+    }
+    if (86_400..172_800).contains(&age.as_secs()) {
+        return "yesterday".to_string();
+    }
+    timeago::Formatter::new().convert(age)
 }
 
 /// Pinned row for the unstable cargo build cache. It lives outside the scan
@@ -222,4 +241,41 @@ fn render_footer(frame: &mut Frame, area: Rect, app: &App) {
         .block(Block::default().borders(Borders::ALL)),
         area,
     );
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::time::Duration;
+
+    #[test]
+    fn relative_ages_use_exact_vocab() {
+        assert_eq!(format_age(Duration::ZERO), "now");
+        assert_eq!(format_age(Duration::from_secs(4)), "now");
+        assert_eq!(format_age(Duration::from_secs(5)), "5 seconds ago");
+        assert_eq!(format_age(Duration::from_secs(30)), "30 seconds ago");
+        assert_eq!(format_age(Duration::from_secs(60)), "1 minute ago");
+        assert_eq!(format_age(Duration::from_secs(3600)), "1 hour ago");
+        assert_eq!(format_age(Duration::from_secs(23 * 3600)), "23 hours ago");
+        assert_eq!(format_age(Duration::from_secs(36 * 3600)), "yesterday");
+        assert_eq!(format_age(Duration::from_secs(3 * 86_400)), "3 days ago");
+    }
+
+    #[test]
+    fn yesterday_window_edges() {
+        assert_eq!(format_age(Duration::from_secs(86_399)), "23 hours ago");
+        assert_eq!(format_age(Duration::from_secs(86_400)), "yesterday");
+        assert_eq!(format_age(Duration::from_secs(172_799)), "yesterday");
+        assert_eq!(format_age(Duration::from_secs(172_800)), "2 days ago");
+    }
+
+    #[test]
+    fn future_timestamp_reads_as_now() {
+        let now = std::time::SystemTime::now();
+        // Clock skew or just-written files read as now, never panic.
+        assert_eq!(
+            format_modified_at(now + Duration::from_secs(60), now),
+            "now"
+        );
+    }
 }
