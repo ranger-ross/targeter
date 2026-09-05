@@ -65,6 +65,27 @@ pub fn render(frame: &mut Frame, app: &mut App) {
             .unwrap_or_else(|_| app.root.clone())
             .display()
     );
+    let visible = app.visible_indices();
+    let visible_size: u64 = visible
+        .iter()
+        .filter_map(|&i| app.entries.get(i))
+        .map(|e| e.size)
+        .sum();
+    let counts = if app.filter_regex.is_some() {
+        format!(
+            "{} of {} projects · {} shown",
+            visible.len(),
+            app.entries.len(),
+            format_size(visible_size)
+        )
+    } else {
+        format!(
+            "{} project{} · {} total",
+            app.entries.len(),
+            if app.entries.len() == 1 { "" } else { "s" },
+            format_size(app.total_size)
+        )
+    };
     frame.render_widget(
         Paragraph::new(Line::from(vec![
             Span::styled(
@@ -73,12 +94,7 @@ pub fn render(frame: &mut Frame, app: &mut App) {
                     .fg(Color::Green)
                     .add_modifier(Modifier::BOLD),
             ),
-            Span::raw(format!(
-                "{} project{} · {} total",
-                app.entries.len(),
-                if app.entries.len() == 1 { "" } else { "s" },
-                format_size(app.total_size)
-            )),
+            Span::raw(counts),
         ]))
         .block(Block::default().borders(Borders::ALL)),
         header_area,
@@ -97,12 +113,16 @@ pub fn render(frame: &mut Frame, app: &mut App) {
                 .block(Block::default().borders(Borders::ALL).title("projects")),
             table_area,
         );
+    } else if visible.is_empty() {
+        frame.render_widget(
+            Paragraph::new(format!("No match for /{}.", app.filter_text))
+                .block(Block::default().borders(Borders::ALL).title("projects")),
+            table_area,
+        );
     } else {
-        let header = Row::new(["Project", "Size", "Modified", "Path"])
-            .style(Style::default().add_modifier(Modifier::BOLD))
-            .height(1);
+        let header = Row::new(["Project", "Size", "Modified", "Path"]).height(1);
 
-        let rows = app.entries.iter().map(|e| {
+        let rows = visible.iter().filter_map(|&i| app.entries.get(i)).map(|e| {
             Row::new([
                 Cell::from(e.project_name()),
                 Cell::from(format_size(e.size)),
@@ -111,7 +131,6 @@ pub fn render(frame: &mut Frame, app: &mut App) {
             ])
             .height(1)
         });
-
         let widths = [
             Constraint::Max(24),
             Constraint::Length(12),
@@ -161,16 +180,41 @@ fn render_build_cache(frame: &mut Frame, area: Rect, app: &App) {
 }
 
 fn render_footer(frame: &mut Frame, area: Rect, app: &App) {
+    if app.filtering {
+        let line = match &app.filter_error {
+            Some(err) => format!("/{}/ ! {}", app.filter_text, err),
+            None => format!("/{}/", app.filter_text),
+        };
+        frame.render_widget(
+            Paragraph::new(Line::from(vec![
+                Span::raw(line),
+                Span::raw(" · enter done · esc done · ^U clear"),
+            ]))
+            .block(
+                Block::default()
+                    .borders(Borders::ALL)
+                    .title("filter (regex)"),
+            ),
+            area,
+        );
+        return;
+    }
     let status = if app.scanning {
         "scanning…".to_string()
     } else {
         format!("sort: {} (s)", app.sort.label())
     };
+    let filter = if app.filter_text.is_empty() {
+        String::new()
+    } else {
+        format!(" · filter: /{}/", app.filter_text)
+    };
     frame.render_widget(
         Paragraph::new(Line::from(vec![
             Span::raw("↑/↓ navigate · g/G top/bottom · s "),
             Span::raw(status),
-            Span::raw(" · r rescan · q quit"),
+            Span::raw(" · / filter · r rescan · q quit"),
+            Span::raw(filter),
             Span::raw(if app.watching { " · live" } else { "" }),
         ]))
         .block(Block::default().borders(Borders::ALL)),

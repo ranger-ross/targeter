@@ -791,6 +791,7 @@ dependencies = [
  "notify",
  "num_cpus",
  "ratatui",
+ "regex",
 ]
 
 [[package]]

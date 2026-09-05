@@ -6,6 +6,7 @@ use std::{
 
 use notify::RecursiveMode;
 use ratatui::widgets::TableState;
+use regex::Regex;
 
 use crate::scan::{Measurement, TargetEntry, build_cache_path};
 
@@ -51,6 +52,14 @@ pub struct App {
     pub sort: SortKey,
     /// True while filesystem watchers cover the known target dirs.
     pub watching: bool,
+    /// True while the user is typing a filter pattern.
+    pub filtering: bool,
+    /// Raw filter text. Compiled live; invalid patterns keep the last good one.
+    pub filter_text: String,
+    /// Last successfully compiled filter, matched against name and path.
+    pub filter_regex: Option<Regex>,
+    /// First line of the latest regex error, if the text does not compile.
+    pub filter_error: Option<String>,
     /// Watched dirs with unprocessed change events.
     dirty: HashSet<PathBuf>,
     /// Last time dirty entries were flushed for measuring.
@@ -61,6 +70,7 @@ pub struct App {
     /// A missing dir came back; the watcher must be rebuilt.
     rewatch_needed: bool,
 }
+
 impl App {
     pub fn new(root: PathBuf) -> Self {
         let mut table_state = TableState::default();
@@ -75,6 +85,10 @@ impl App {
             scanning: true,
             sort: SortKey::default(),
             watching: false,
+            filtering: false,
+            filter_text: String::new(),
+            filter_regex: None,
+            filter_error: None,
             dirty: HashSet::new(),
             last_flush: Instant::now(),
             missing: HashSet::new(),
@@ -94,12 +108,12 @@ impl App {
         self.missing.clear();
         self.rewatch_needed = false;
         // Keep selection in bounds after rescan.
-        if self.entries.is_empty() {
+        let visible = self.visible_indices().len();
+        if visible == 0 {
             self.table_state.select(None);
         } else {
             let selected = self.table_state.selected().unwrap_or(0);
-            self.table_state
-                .select(Some(selected.min(self.entries.len() - 1)));
+            self.table_state.select(Some(selected.min(visible - 1)));
         }
     }
 
@@ -108,6 +122,50 @@ impl App {
         let mut entries = std::mem::take(&mut self.entries);
         self.sort_entries(&mut entries);
         self.entries = entries;
+    }
+
+    /// Replace the filter text and compile it live. An invalid pattern
+    /// keeps the last good one and records the error instead.
+    /// Selection restarts at the top of the narrowed list.
+    pub fn set_filter(&mut self, text: String) {
+        self.filter_text = text;
+        if self.filter_text.is_empty() {
+            self.filter_regex = None;
+            self.filter_error = None;
+        } else {
+            match Regex::new(&self.filter_text) {
+                Ok(re) => {
+                    self.filter_regex = Some(re);
+                    self.filter_error = None;
+                }
+                Err(e) => {
+                    self.filter_error = Some(
+                        e.to_string()
+                            .lines()
+                            .next()
+                            .unwrap_or("invalid regex")
+                            .to_string(),
+                    );
+                }
+            }
+        }
+        self.top();
+    }
+
+    /// Indices into `entries` that pass the filter, in order.
+    pub fn visible_indices(&self) -> Vec<usize> {
+        match &self.filter_regex {
+            None => (0..self.entries.len()).collect(),
+            Some(re) => self
+                .entries
+                .iter()
+                .enumerate()
+                .filter(|(_, e)| {
+                    re.is_match(&e.project_name()) || re.is_match(&e.project_path.to_string_lossy())
+                })
+                .map(|(i, _)| i)
+                .collect(),
+        }
     }
     fn sort_entries(&self, entries: &mut [TargetEntry]) {
         match self.sort {
@@ -194,6 +252,7 @@ impl App {
         let selected_path = self
             .table_state
             .selected()
+            .and_then(|i| self.visible_indices().get(i).copied())
             .and_then(|i| self.entries.get(i))
             .map(|e| e.project_path.clone());
         for m in measurements {
@@ -234,39 +293,45 @@ impl App {
         let mut entries = std::mem::take(&mut self.entries);
         self.sort_entries(&mut entries);
         self.entries = entries;
-        if let Some(path) = selected_path
-            && let Some(i) = self.entries.iter().position(|e| e.project_path == path)
-        {
-            self.table_state.select(Some(i));
+        if let Some(path) = selected_path {
+            let visible = self.visible_indices();
+            let pos = visible
+                .iter()
+                .position(|&i| self.entries.get(i).is_some_and(|e| e.project_path == path));
+            self.table_state
+                .select(pos.or_else(|| visible.first().map(|_| 0)));
         }
     }
 
     pub fn next(&mut self) {
-        if self.entries.is_empty() {
+        let visible = self.visible_indices().len();
+        if visible == 0 {
             return;
         }
         let i = self.table_state.selected().unwrap_or(0);
-        self.table_state.select(Some((i + 1) % self.entries.len()));
+        self.table_state.select(Some((i + 1) % visible));
     }
 
     pub fn previous(&mut self) {
-        if self.entries.is_empty() {
+        let visible = self.visible_indices().len();
+        if visible == 0 {
             return;
         }
         let i = self.table_state.selected().unwrap_or(0);
         self.table_state
-            .select(Some(i.checked_sub(1).unwrap_or(self.entries.len() - 1)));
+            .select(Some(i.checked_sub(1).unwrap_or(visible - 1)));
     }
 
     pub fn top(&mut self) {
-        if !self.entries.is_empty() {
+        if !self.visible_indices().is_empty() {
             self.table_state.select(Some(0));
         }
     }
 
     pub fn bottom(&mut self) {
-        if !self.entries.is_empty() {
-            self.table_state.select(Some(self.entries.len() - 1));
+        let visible = self.visible_indices().len();
+        if visible > 0 {
+            self.table_state.select(Some(visible - 1));
         }
     }
 }
@@ -430,5 +495,49 @@ mod tests {
         let cache = app.build_cache.as_ref().expect("cache row created");
         assert!(cache.size > 0);
         assert!(app.take_rewatch_needed());
+    }
+
+    #[test]
+    fn filter_alternation_narrows_to_matches() {
+        let mut app = app_with_entries();
+        app.set_filter("big|zzz".to_string());
+        assert_eq!(app.visible_indices(), vec![0]);
+        app.set_filter("proj-".to_string());
+        assert_eq!(app.visible_indices().len(), 2);
+    }
+
+    #[test]
+    fn filter_matches_path_substring() {
+        let mut app = App::new(PathBuf::from("."));
+        app.set_entries(vec![entry("ws/member-a", 5), entry("other", 6)], None);
+        app.set_filter("member".to_string());
+        assert_eq!(app.visible_indices(), vec![1]);
+    }
+
+    #[test]
+    fn invalid_filter_keeps_last_good() {
+        let mut app = app_with_entries();
+        app.set_filter("big".to_string());
+        assert_eq!(app.visible_indices(), vec![0]);
+        app.set_filter("big(".to_string());
+        assert!(app.filter_error.is_some());
+        assert_eq!(app.visible_indices(), vec![0]);
+        app.set_filter(String::new());
+        assert!(app.filter_error.is_none());
+        assert!(app.filter_regex.is_none());
+        assert_eq!(app.visible_indices().len(), 2);
+    }
+
+    #[test]
+    fn filter_resets_selection_and_nav_wraps_visible() {
+        let mut app = app_with_entries();
+        app.table_state.select(Some(1));
+        app.set_filter("small".to_string());
+        assert_eq!(app.visible_indices(), vec![1]);
+        assert_eq!(app.table_state.selected(), Some(0));
+        app.next();
+        assert_eq!(app.table_state.selected(), Some(0));
+        app.previous();
+        assert_eq!(app.table_state.selected(), Some(0));
     }
 }
