@@ -21,12 +21,7 @@ pub fn render(frame: &mut Frame, app: &mut App) {
     ])
     .areas(area);
 
-    let title = format!(
-        " targeter: {} ",
-        std::fs::canonicalize(&app.root)
-            .unwrap_or_else(|_| app.root.clone())
-            .display()
-    );
+    let title = format!(" targeter: {} ", display_path(&app.root));
     let visible = app.visible_indices();
     let visible_size: u64 = visible
         .iter()
@@ -89,7 +84,7 @@ pub fn render(frame: &mut Frame, app: &mut App) {
                 Cell::from(e.project_name()),
                 Cell::from(format_size(e.size)),
                 Cell::from(format_modified(e.last_modified)),
-                Cell::from(display_path(app, &e.project_path)),
+                Cell::from(display_path(&e.project_path)),
             ])
             .height(1)
         });
@@ -133,17 +128,25 @@ fn format_size(bytes: u64) -> String {
     }
 }
 
-/// Canonicalize for display, falling back to the raw path on error.
-fn display_path(app: &App, path: &std::path::Path) -> String {
-    let base = std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
-    // Strip the scan root prefix so deep trees stay readable.
-    if let Ok(root) = std::fs::canonicalize(&app.root)
-        && let Ok(rel) = base.strip_prefix(&root).map(|p| p.to_path_buf())
-        && !rel.as_os_str().is_empty()
+/// Absolute path for display, canonicalized, with `$HOME` contracted to `~`.
+/// Falls back to the raw path when canonicalization fails.
+fn display_path(path: &std::path::Path) -> String {
+    let abs = std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
+    if let Ok(home) = std::env::var("HOME")
+        && !home.is_empty()
     {
-        return format!("./{}", rel.display());
+        let home = std::path::PathBuf::from(home);
+        // Compare against the canonicalized home so symlinked `$HOME`
+        // (e.g. macOS `/home` -> `/private/home`) still contracts.
+        let canon_home = std::fs::canonicalize(&home).unwrap_or(home);
+        if let Ok(rel) = abs.strip_prefix(&canon_home) {
+            if rel.as_os_str().is_empty() {
+                return "~".to_string();
+            }
+            return format!("~/{}", rel.display());
+        }
     }
-    base.display().to_string()
+    abs.display().to_string()
 }
 
 fn format_modified(last_modified: std::time::SystemTime) -> String {
@@ -160,13 +163,11 @@ fn render_build_cache(frame: &mut Frame, area: Rect, app: &App) {
             "{} ({})  {}",
             format_size(entry.size),
             format_modified(entry.last_modified),
-            std::fs::canonicalize(&entry.project_path)
-                .unwrap_or_else(|_| entry.project_path.clone())
-                .display()
+            display_path(&entry.project_path)
         ),
         None if app.scanning => "Measuring…".to_string(),
         None => match crate::scan::build_cache_path() {
-            Some(path) => format!("not present: {}", path.display()),
+            Some(path) => format!("not present: {}", display_path(&path)),
             None => "no cargo home found".to_string(),
         },
     };
