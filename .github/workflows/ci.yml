@@ -1,0 +1,57 @@
+name: Test
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: "*"
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  typos:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: crate-ci/typos@v1.50.1
+
+  build:
+    runs-on: ubuntu-latest
+    continue-on-error: ${{ matrix.nightly }}
+
+    strategy:
+      fail-fast: false
+      matrix:
+        toolchain: ["stable", "beta"]
+        nightly: [false]
+        include:
+          - toolchain: "nightly"
+            nightly: true
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install ${{ matrix.toolchain }} toolchain
+        uses: dtolnay/rust-toolchain@v1
+        with:
+          toolchain: ${{ matrix.toolchain }}
+          components: clippy, rustfmt
+
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: nextest
+
+      - uses: Swatinem/rust-cache@v2.9.2
+
+      - name: Run cargo fmt
+        run: cargo fmt --all --check
+
+      - name: Run tests
+        run: cargo nextest run --all-features --all-targets
+
+      - name: Run doc tests
+        run: cargo test --doc --verbose
+
+      - name: Run clippy
+        run: cargo clippy --all-targets --all-features
