@@ -71,6 +71,7 @@ impl App {
         }
     }
 
+    #[tracing::instrument(skip_all)]
     pub fn set_entries(&mut self, mut entries: Vec<TargetEntry>, build_cache: Option<TargetEntry>) {
         self.sort_entries(&mut entries);
         self.total_size = entries.iter().map(|e| e.size).sum();
@@ -210,6 +211,7 @@ impl App {
 
     /// Apply fresh measurements. Selection stays on the same project even
     /// when the new sizes reorder the table.
+    #[tracing::instrument(skip_all)]
     pub fn apply_measurements(&mut self, measurements: Vec<Measurement>) {
         if measurements.is_empty() {
             return;

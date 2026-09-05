@@ -39,6 +39,7 @@ impl LiveWatcher {
 
     /// Drop the current watcher and build a fresh one for the latest entries.
     /// Old watches die with the old watcher.
+    #[tracing::instrument(skip_all)]
     pub fn rewatch(&mut self, app: &mut App) {
         if let Some((w, rx)) = rebuild_watcher(app) {
             self.watcher = Some(w);
@@ -58,6 +59,7 @@ impl LiveWatcher {
 
     /// Drain filesystem events into dirty dirs, flush due dirs to background
     /// measuring, and collect fresh measurements.
+    #[tracing::instrument(skip_all)]
     pub fn poll(&mut self, app: &mut App) {
         // Reads are ignored so our own measuring never marks anything dirty.
         if let Some(rx) = self.watcher_rx.as_ref() {
@@ -105,6 +107,7 @@ impl Default for LiveWatcher {
 
 /// Watch every known target dir for live updates. Returns `None` when there
 /// is nothing to watch. Failed watches are skipped, never fatal.
+#[tracing::instrument(skip_all)]
 pub fn rebuild_watcher(
     app: &App,
 ) -> Option<(

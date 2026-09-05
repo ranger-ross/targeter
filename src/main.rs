@@ -23,10 +23,12 @@ mod app;
 mod args;
 mod input;
 mod scan;
+mod trace;
 mod ui;
 mod watch;
 
 fn main() -> Result<()> {
+    let _trace_guard = trace::init();
     let Args { root } = Args::new();
     if !root.is_dir() {
         eyre::bail!("scan root is not a directory: {}", root.display());
@@ -44,6 +46,9 @@ fn main() -> Result<()> {
     disable_raw_mode().wrap_err("disabling terminal raw mode")?;
     execute!(terminal.backend_mut(), LeaveAlternateScreen).wrap_err("leaving alternate screen")?;
     terminal.show_cursor().wrap_err("restoring cursor")?;
+    if let Some(guard) = _trace_guard.as_ref() {
+        eprintln!("Trace written to {}", guard.path.display());
+    }
 
     result
 }
@@ -54,6 +59,7 @@ fn run(terminal: &mut Terminal<CrosstermBackend<std::io::Stdout>>, root: PathBuf
     let mut live = LiveWatcher::new();
 
     loop {
+        let _frame = tracing::info_span!("frame").entered();
         terminal
             .draw(|frame| ui::render(frame, &mut app))
             .wrap_err("rendering frame")?;

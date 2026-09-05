@@ -37,6 +37,7 @@ impl TargetEntry {
 /// - if that directory also contains a `target/` subdirectory it is reported
 /// - `.git` and `.cargo` are never descended into
 /// - `target/` itself is never descended into for further project detection
+#[tracing::instrument(skip_all, fields(root = %root.display()))]
 pub fn scan(root: &Path) -> Vec<TargetEntry> {
     let num_threads = num_cpus::get().max(1);
     let projects: Vec<PathBuf> = thread::scope(|scope| {
@@ -101,6 +102,7 @@ pub fn build_cache_path() -> Option<PathBuf> {
 ///
 /// A missing directory means the cache is disabled or unused, so there is
 /// nothing to report rather than a zero-size entry.
+#[tracing::instrument]
 pub fn build_cache_entry() -> Option<TargetEntry> {
     build_cache_path().and_then(|path| build_cache_entry_at(&path))
 }
@@ -129,6 +131,7 @@ pub struct Measurement {
 }
 
 /// Re-measure one known directory. Uses the same math as the full scan for one path.
+#[tracing::instrument(skip_all, fields(target = %target_dir.display()))]
 pub fn measure_target(target_dir: &Path) -> Measurement {
     let (size, last_modified) = recursive_scan_target(target_dir);
     Measurement {
@@ -198,6 +201,7 @@ fn find_projects_task(job: Job, results: &Sender<PathBuf>) {
 /// do not inflate the total. Sizes use allocated blocks, so sparse files count
 /// occupied space. Missing paths and symlinks count as empty. Unreadable
 /// subtrees add nothing.
+#[tracing::instrument(skip_all, fields(path = %path.as_ref().display()))]
 fn recursive_scan_target<T: AsRef<Path>>(path: T) -> (u64, SystemTime) {
     let mut seen = HashSet::new();
     scan_inner(path.as_ref(), &mut seen)

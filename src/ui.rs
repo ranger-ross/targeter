@@ -10,6 +10,7 @@ use ratatui::{
 
 use crate::app::App;
 
+#[tracing::instrument(skip_all)]
 pub fn render(frame: &mut Frame, app: &mut App) {
     let area = frame.area();
     let [header_area, cache_area, table_area, footer_area] = Layout::vertical([
