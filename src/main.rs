@@ -25,6 +25,7 @@ mod input;
 mod loading;
 mod poll;
 mod scan;
+mod theme;
 mod trace;
 mod ui;
 

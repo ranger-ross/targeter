@@ -66,23 +66,25 @@ pub fn render(frame: &mut Frame, app: &mut App) {
                 )
                 .line(),
             )
-            .block(Block::default().borders(Borders::ALL).title("projects")),
+            .block(crate::theme::card("projects", true)),
             table_area,
         );
     } else if app.entries.is_empty() {
         frame.render_widget(
             Paragraph::new("No target/ directories found.")
-                .block(Block::default().borders(Borders::ALL).title("projects")),
+                .block(crate::theme::card("projects", false)),
             table_area,
         );
     } else if visible.is_empty() {
         frame.render_widget(
             Paragraph::new(format!("No match for /{}.", app.filter_text))
-                .block(Block::default().borders(Borders::ALL).title("projects")),
+                .block(crate::theme::card("projects", false)),
             table_area,
         );
     } else {
-        let header = Row::new(["Project", "Size", "Modified", "Path"]).height(1);
+        let header = Row::new(["Project", "Size", "Modified", "Path"])
+            .height(1)
+            .style(Style::default().fg(crate::theme::MUTED));
 
         let rows = visible.iter().filter_map(|&i| app.entries.get(i)).map(|e| {
             Row::new([
@@ -101,12 +103,8 @@ pub fn render(frame: &mut Frame, app: &mut App) {
         ];
         let table = Table::new(rows, widths)
             .header(header)
-            .block(Block::default().borders(Borders::ALL).title("projects"))
-            .row_highlight_style(
-                Style::default()
-                    .bg(Color::DarkGray)
-                    .add_modifier(Modifier::BOLD),
-            );
+            .block(crate::theme::card("projects", false))
+            .row_highlight_style(crate::theme::selected());
         frame.render_stateful_widget(table, table_area, &mut app.table_state);
     }
 
