@@ -1,18 +1,4 @@
 //! Shimmer sweep for loading text, ported from omp's `theme/shimmer.ts`.
-//!
-//! Text rests dim while a bright band sweeps through it. Each char lands
-//! in one of three tiers by distance to the crest: dim base, gray
-//! approach, bold blue crest. Band position reads wall-clock time, so any
-//! string stays smooth at any frame rate.
-//!
-//! ```ignore
-//! // In the render pass:
-//! use crate::loading::Loading;
-//! frame.render_widget(
-//!     Loading::new("Working…", app.loading_start.elapsed()),
-//!     area,
-//! );
-//! ```
 
 use std::time::Duration;
 
@@ -24,11 +10,8 @@ use ratatui::{
     widgets::{Paragraph, Widget},
 };
 
-/// Cells per second. One fixed velocity keeps every string smooth.
 const SPEED_CELLS_PER_S: f32 = 30.0;
-/// Dead cells before/after the text so the band slides in and out.
 const PADDING: f32 = 10.0;
-/// Cosine bump half-width in cells.
 const BAND_HALF_WIDTH: f32 = 8.0;
 
 const TIER_HIGH: f32 = 0.65;
@@ -38,7 +21,6 @@ const TIER_MID: f32 = 0.22;
 pub type Rgb = [u8; 3];
 
 /// Three-tier color stack a character cycles through as the band sweeps.
-/// Low is the resting base, mid the approach, high the crest.
 pub struct ShimmerPalette {
     pub low: Rgb,
     pub mid: Rgb,
@@ -124,6 +106,7 @@ impl Widget for Loading<'_> {
 const fn rgb(hex: u32) -> Rgb {
     [(hex >> 16) as u8, (hex >> 8) as u8, hex as u8]
 }
+
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum Tier {
     Low,

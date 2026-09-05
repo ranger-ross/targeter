@@ -9,6 +9,10 @@ use ratatui::{
 
 use crate::app::App;
 
+pub mod input;
+mod loading;
+mod theme;
+
 #[tracing::instrument(skip_all)]
 pub fn render(frame: &mut Frame, app: &mut App) {
     let area = frame.area();
@@ -61,7 +65,7 @@ pub fn render(frame: &mut Frame, app: &mut App) {
             ),
             Span::raw(format!(" · {counts}")),
         ]))
-        .block(crate::theme::card("Summary")),
+        .block(crate::ui::theme::card("Summary")),
         summary_area,
     );
     if let Some(cache_area) = cache_area {
@@ -71,30 +75,30 @@ pub fn render(frame: &mut Frame, app: &mut App) {
     if app.scanning {
         frame.render_widget(
             Paragraph::new(
-                crate::loading::Loading::new(
+                crate::ui::loading::Loading::new(
                     "Scanning for target/ directories…",
                     app.loading_start.elapsed(),
                 )
                 .line(),
             )
-            .block(crate::theme::card_plain()),
+            .block(crate::ui::theme::card_plain()),
             table_area,
         );
     } else if app.entries.is_empty() {
         frame.render_widget(
-            Paragraph::new("No target/ directories found.").block(crate::theme::card_plain()),
+            Paragraph::new("No target/ directories found.").block(crate::ui::theme::card_plain()),
             table_area,
         );
     } else if visible.is_empty() {
         frame.render_widget(
             Paragraph::new(format!("No match for /{}.", app.filter_text))
-                .block(crate::theme::card_plain()),
+                .block(crate::ui::theme::card_plain()),
             table_area,
         );
     } else {
         let header = Row::new(["Project", "Size", "Modified", "Path"])
             .height(1)
-            .style(Style::default().fg(crate::theme::MUTED));
+            .style(Style::default().fg(crate::ui::theme::MUTED));
 
         let rows = visible.iter().filter_map(|&i| app.entries.get(i)).map(|e| {
             Row::new([
@@ -113,8 +117,8 @@ pub fn render(frame: &mut Frame, app: &mut App) {
         ];
         let table = Table::new(rows, widths)
             .header(header)
-            .block(crate::theme::card_plain())
-            .row_highlight_style(crate::theme::selected());
+            .block(crate::ui::theme::card_plain())
+            .row_highlight_style(crate::ui::theme::selected());
         frame.render_stateful_widget(table, table_area, &mut app.table_state);
     }
 
@@ -162,9 +166,6 @@ fn display_path(path: &std::path::Path) -> String {
     abs.display().to_string()
 }
 
-/// Relative age ("now", "30 seconds ago", "yesterday", ...). Bucketing and
-/// pluralization come from `timeago`, with two overrides: under 5s reads
-/// "now", and 24-48h reads "yesterday", never "1 day ago".
 fn format_modified(last_modified: std::time::SystemTime) -> String {
     format_modified_at(last_modified, std::time::SystemTime::now())
 }
@@ -212,7 +213,7 @@ fn render_build_cache(frame: &mut Frame, area: Rect, app: &App) {
         },
     };
     frame.render_widget(
-        Paragraph::new(line).block(crate::theme::card("Build Cache")),
+        Paragraph::new(line).block(crate::ui::theme::card("Build Cache")),
         area,
     );
 }
@@ -228,7 +229,7 @@ fn render_footer(frame: &mut Frame, area: Rect, app: &App) {
                 Span::raw(line),
                 Span::raw(" · enter done · esc done · ^U clear"),
             ]))
-            .block(crate::theme::card("filter (regex)")),
+            .block(crate::ui::theme::card("filter (regex)")),
             area,
         );
         return;
@@ -250,7 +251,7 @@ fn render_footer(frame: &mut Frame, area: Rect, app: &App) {
             Span::raw(" · / filter · r rescan · q quit"),
             Span::raw(filter),
         ]))
-        .block(crate::theme::card_plain()),
+        .block(crate::ui::theme::card_plain()),
         area,
     );
 }

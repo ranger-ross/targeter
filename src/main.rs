@@ -15,17 +15,14 @@ use ratatui::backend::CrosstermBackend;
 
 use app::App;
 use args::Args;
-use input::{Action, handle_key};
 use poll::Poller;
 use scan::{TargetEntry, resolve_root};
+use ui::input::{Action, handle_key};
 
 mod app;
 mod args;
-mod input;
-mod loading;
 mod poll;
 mod scan;
-mod theme;
 mod trace;
 mod ui;
 
@@ -73,9 +70,6 @@ fn run(terminal: &mut Terminal<CrosstermBackend<std::io::Stdout>>, root: PathBuf
             app.set_entries(entries, build_cache);
             scan_rx = None;
             poller.reset(&app);
-            // The scan leaves tens of MB of transient buffers. Hand free
-            // pages back so idle RSS reflects live data.
-            trim_heap();
         }
 
         poller.poll(&mut app);
@@ -113,18 +107,4 @@ fn spawn_scan(root: &Path) -> Option<mpsc::Receiver<(Vec<TargetEntry>, Option<Ta
         let _ = tx.send((entries, build_cache));
     });
     Some(rx)
-}
-
-/// Release fully-free glibc heap pages. No-op off Linux.
-fn trim_heap() {
-    #[cfg(target_os = "linux")]
-    {
-        unsafe extern "C" {
-            fn malloc_trim(pad: usize) -> i32;
-        }
-        // SAFETY: malloc_trim only releases free pages. Live blocks stay.
-        unsafe {
-            malloc_trim(0);
-        }
-    }
 }
