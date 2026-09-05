@@ -127,7 +127,7 @@ pub fn render(frame: &mut Frame, app: &mut App) {
                     Cell::from(size_text),
                     Cell::from(format_modified_entry(e)),
                     Cell::from(Text::styled(
-                        display_path(&e.project_path),
+                        display_path(&e.target_dir),
                         Style::default().fg(crate::ui::theme::DIM),
                     )),
                 ])
@@ -264,7 +264,7 @@ fn render_build_cache(frame: &mut Frame, area: Rect, app: &App) {
             "{} ({})  {}",
             format_size_opt(entry.size),
             format_modified_entry(entry),
-            display_path(&entry.project_path)
+            display_path(&entry.target_dir)
         ),
         None if app.scanning => "Measuring…".to_string(),
         None => match crate::scan::build_cache_path() {
@@ -428,6 +428,7 @@ mod tests {
         assert_eq!(format_size_opt(Some(0)), "0 B");
         let pending = TargetEntry {
             project_path: std::path::PathBuf::from("proj-a"),
+            target_dir: std::path::PathBuf::from("proj-a/target"),
             size: None,
             last_modified: None,
         };

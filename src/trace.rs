@@ -14,10 +14,7 @@ pub struct TraceGuard {
     pub path: PathBuf,
 }
 
-/// Enable Chrome-trace output for https://ui.perfetto.dev when requested.
-///
-/// `1`, `true`, `yes`, `on`, or a custom path enable; `0`, `false`,
-/// `no`, `off`, empty, or unset disable tracing (`None`).
+/// Enable Chrome-trace output
 pub fn init() -> Option<TraceGuard> {
     let raw = std::env::var(ENV_VAR).ok()?;
     let value = raw.trim();
@@ -34,7 +31,6 @@ pub fn init() -> Option<TraceGuard> {
         .include_args(true)
         .include_locations(true)
         .build();
-    // try_init so tests embedding instrumented code never panic.
     let _ = tracing_subscriber::registry().with(layer).try_init();
     eprintln!("TARGETER_TRACING: writing trace to {}", path.display());
     Some(TraceGuard {

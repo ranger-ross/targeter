@@ -28,6 +28,7 @@ pub fn build_cache_entry_at(path: &Path) -> Option<TargetEntry> {
     let (size, last_modified) = recursive_scan_target(path);
     Some(TargetEntry {
         project_path: path.to_path_buf(),
+        target_dir: path.to_path_buf(),
         size: Some(size),
         last_modified,
     })
