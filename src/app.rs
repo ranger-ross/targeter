@@ -1,7 +1,4 @@
-use std::{
-    path::PathBuf,
-    time::{Duration, Instant},
-};
+use std::{path::PathBuf, time::Instant};
 
 use ratatui::widgets::TableState;
 use regex::Regex;
@@ -32,9 +29,6 @@ pub struct App {
 }
 
 impl App {
-    /// New dirs arriving within this window of a scan start take selection
-    /// to the top, unless the user already navigated.
-    const AUTOTOP_GRACE: Duration = Duration::from_secs(3);
 
     pub fn new(root: PathBuf) -> Self {
         let mut table_state = TableState::default();
@@ -77,7 +71,7 @@ impl App {
         self.entries = entries;
         self.scanning = true;
         self.clamp_selection();
-        if !self.navigated && self.loading_start.elapsed() < Self::AUTOTOP_GRACE {
+        if !self.navigated {
             self.top_unmarked();
         }
     }
@@ -196,9 +190,9 @@ impl App {
         let mut entries = std::mem::take(&mut self.entries);
         self.sort_entries(&mut entries);
         self.entries = entries;
-        if !self.navigated && self.loading_start.elapsed() < Self::AUTOTOP_GRACE {
+        if !self.navigated {
             // Sizes churn the order while the walk runs. Stay glued to the
-            // top until the user takes over or the grace window passes.
+            // top until the user takes over.
             self.top_unmarked();
         } else if let Some(path) = selected_path {
             let visible = self.visible_indices();
@@ -394,9 +388,9 @@ mod tests {
             },
         ]);
         app.finish_scan(None);
-        // Settle outside the auto-top grace window so tests exercise
-        // steady-state selection instead of scan-start pinning.
-        app.loading_start = Instant::now() - Duration::from_secs(3600);
+        // Simulate settled state: the user has taken over, so later
+        // measurements follow the selection instead of pinning to top.
+        app.navigated = true;
         app
     }
 
@@ -495,31 +489,6 @@ mod tests {
         }]);
         assert_eq!(app.entries[1].project_path, PathBuf::from("proj-b"));
         assert_eq!(app.table_state.selected(), Some(1));
-    }
-
-    #[test]
-    fn expired_grace_leaves_selection_alone() {
-        let mut app = app_with_entries();
-        app.table_state.select(Some(1));
-        app.begin_scan();
-        // Simulate a slow discovery arriving after the grace window.
-        app.loading_start = Instant::now() - Duration::from_secs(3600);
-        app.set_discovered(vec![PathBuf::from("proj-small"), PathBuf::from("proj-big")]);
-        assert_eq!(app.table_state.selected(), Some(1));
-        // Measuring the other row re-sorts around the user's row.
-        app.apply_measurements(&[Measurement {
-            target_dir: PathBuf::from("proj-big/target"),
-            size: 200,
-            last_modified: Some(SystemTime::UNIX_EPOCH),
-        }]);
-        assert_eq!(app.entries[0].project_path, PathBuf::from("proj-big"));
-        assert_eq!(app.table_state.selected(), Some(1));
-        let selected = app
-            .table_state
-            .selected()
-            .and_then(|i| app.entries.get(i))
-            .expect("selection kept");
-        assert_eq!(selected.project_path, PathBuf::from("proj-small"));
     }
 
     #[test]
@@ -633,7 +602,6 @@ mod tests {
             last_modified: Some(SystemTime::UNIX_EPOCH),
         }]);
         app.finish_scan(None);
-        app.loading_start = Instant::now() - Duration::from_secs(3600);
         app.delete_selected();
         assert!(!root.join("proj/target").exists());
         assert_eq!(app.entries[0].size, Some(0));
@@ -654,7 +622,6 @@ mod tests {
         let mut app = App::new(root.clone());
         app.set_discovered(vec![root.join("proj-a"), root.join("proj-b")]);
         app.finish_scan(None);
-        app.loading_start = Instant::now() - Duration::from_secs(3600);
         app.set_filter("proj-b".to_string());
         assert_eq!(app.visible_indices().len(), 1);
         app.delete_selected();
