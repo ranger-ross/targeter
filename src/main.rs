@@ -16,16 +16,16 @@ use ratatui::backend::CrosstermBackend;
 use app::App;
 use args::Args;
 use input::{Action, handle_key};
-use scan::TargetEntry;
-use watch::{LiveWatcher, resolve_root};
+use poll::Poller;
+use scan::{TargetEntry, resolve_root};
 
 mod app;
 mod args;
 mod input;
+mod poll;
 mod scan;
 mod trace;
 mod ui;
-mod watch;
 
 fn main() -> Result<()> {
     let _trace_guard = trace::init();
@@ -56,7 +56,7 @@ fn main() -> Result<()> {
 fn run(terminal: &mut Terminal<CrosstermBackend<std::io::Stdout>>, root: PathBuf) -> Result<()> {
     let mut app = App::new(root.clone());
     let mut scan_rx = spawn_scan(&root);
-    let mut live = LiveWatcher::new();
+    let mut poller = Poller::new();
 
     loop {
         let _frame = tracing::info_span!("frame").entered();
@@ -70,10 +70,13 @@ fn run(terminal: &mut Terminal<CrosstermBackend<std::io::Stdout>>, root: PathBuf
         {
             app.set_entries(entries, build_cache);
             scan_rx = None;
-            live.rewatch(&mut app);
+            poller.reset(&app);
+            // The scan frees tens of MB of transient buffers; hand fully-free
+            // pages back so idle RSS reflects live data, not arena leftovers.
+            trim_heap();
         }
 
-        live.poll(&mut app);
+        poller.poll(&mut app);
 
         if event::poll(Duration::from_millis(100)).wrap_err("polling terminal events")? {
             match event::read().wrap_err("reading terminal event")? {
@@ -82,7 +85,6 @@ fn run(terminal: &mut Terminal<CrosstermBackend<std::io::Stdout>>, root: PathBuf
                     Action::Quit => return Ok(()),
                     Action::Rescan => {
                         app.scanning = true;
-                        live.clear(&mut app);
                         scan_rx = spawn_scan(&app.root);
                     }
                 },
@@ -104,4 +106,18 @@ fn spawn_scan(root: &Path) -> Option<mpsc::Receiver<(Vec<TargetEntry>, Option<Ta
         let _ = tx.send((entries, build_cache));
     });
     Some(rx)
+}
+
+/// Release fully-free glibc heap pages. No-op off Linux.
+fn trim_heap() {
+    #[cfg(target_os = "linux")]
+    {
+        unsafe extern "C" {
+            fn malloc_trim(pad: usize) -> i32;
+        }
+        // SAFETY: malloc_trim(0) only releases free pages; live blocks stay.
+        unsafe {
+            malloc_trim(0);
+        }
+    }
 }

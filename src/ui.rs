@@ -236,7 +236,6 @@ fn render_footer(frame: &mut Frame, area: Rect, app: &App) {
             Span::raw(status),
             Span::raw(" · / filter · r rescan · q quit"),
             Span::raw(filter),
-            Span::raw(if app.watching { " · live" } else { "" }),
         ]))
         .block(Block::default().borders(Borders::ALL)),
         area,

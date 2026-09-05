@@ -4,7 +4,7 @@ use std::{
     time::{Duration, SystemTime},
 };
 
-use ignore::{DirEntry, WalkBuilder, WalkState};
+use ignore::{DirEntry, WalkBuilder};
 
 #[cfg(unix)]
 use std::os::unix::fs::MetadataExt;
@@ -41,28 +41,29 @@ pub(super) fn recursive_scan_target<T: AsRef<Path>>(path: T) -> (u64, SystemTime
     if !path.exists() || path.is_symlink() {
         return (0, SystemTime::UNIX_EPOCH);
     }
-    // One traversal feeds size, mtime, and inode identity. Per-entry records
-    // stream over a channel; the serial fold dedups hardlinks like `du`.
-    let (tx, rx) = crossbeam_channel::unbounded();
-    WalkBuilder::new(path)
+    // Serial walk with an inline fold: no channel, no extra threads. Targets
+    // already measure in parallel (discover.rs), so per-target pools would
+    // only multiply threads and buffer whole file lists in memory.
+    #[cfg(unix)]
+    let mut seen = HashSet::new();
+    let mut total = 0u64;
+    let mut newest = SystemTime::UNIX_EPOCH;
+    let walk = WalkBuilder::new(path)
         .hidden(false)
         .require_git(false)
         .standard_filters(false)
-        .threads(num_cpus::get().max(1))
-        .build_parallel()
-        .run(|| {
-            let tx = tx.clone();
-            Box::new(move |result: Result<DirEntry, ignore::Error>| {
-                if let Ok(entry) = result
-                    && let Some(rec) = record_entry(&entry)
-                {
-                    let _ = tx.send(rec);
-                }
-                WalkState::Continue
-            })
-        });
-    drop(tx);
-    fold_records(rx)
+        .build();
+    for result in walk {
+        let Ok(entry) = result else { continue };
+        let Some(rec) = record_entry(&entry) else { continue };
+        #[cfg(unix)]
+        if !seen.insert((rec.dev, rec.ino)) {
+            continue;
+        }
+        total += rec.size;
+        newest = newest.max(SystemTime::UNIX_EPOCH + Duration::from_nanos(rec.mtime_ns));
+    }
+    (total, newest)
 }
 
 /// One entry's contribution. `mtime_ns` saturates pre-epoch times to zero,
@@ -97,24 +98,6 @@ fn record_entry(entry: &DirEntry) -> Option<EntryRec> {
     })
 }
 
-fn fold_records(rx: crossbeam_channel::Receiver<EntryRec>) -> (u64, SystemTime) {
-    #[cfg(unix)]
-    let mut seen = HashSet::new();
-    let mut total = 0u64;
-    let mut newest_ns = 0u64;
-    for rec in rx {
-        #[cfg(unix)]
-        if !seen.insert((rec.dev, rec.ino)) {
-            continue;
-        }
-        total += rec.size;
-        newest_ns = newest_ns.max(rec.mtime_ns);
-    }
-    (
-        total,
-        SystemTime::UNIX_EPOCH + Duration::from_nanos(newest_ns),
-    )
-}
 
 #[cfg(test)]
 mod tests {

@@ -10,7 +10,7 @@ pub use cache::{build_cache_entry, build_cache_path};
 pub use discover::scan;
 pub use measure::{Measurement, measure_target};
 
-use std::{path::PathBuf, time::SystemTime};
+use std::{path::{Path, PathBuf}, time::SystemTime};
 
 /// A Rust project with a `target/` directory on disk.
 #[derive(Clone, Debug)]
@@ -31,4 +31,10 @@ impl TargetEntry {
             .to_string_lossy()
             .into_owned()
     }
+}
+
+/// Resolve the scan root to an absolute path, so displayed paths and
+/// poller measurements stay absolute however the program was invoked.
+pub fn resolve_root(raw: &Path) -> PathBuf {
+    std::fs::canonicalize(raw).unwrap_or_else(|_| raw.to_path_buf())
 }

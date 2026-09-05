@@ -1,32 +1,21 @@
-use std::{
-    collections::HashSet,
-    path::{Path, PathBuf},
-    time::{Duration, Instant},
-};
+use std::path::PathBuf;
 
-use notify::RecursiveMode;
 use ratatui::widgets::TableState;
 use regex::Regex;
 
 use crate::scan::{Measurement, TargetEntry, build_cache_path};
-
-/// Pause between a change event and re-measuring, so a burst of writes
-/// during a build triggers one re-measure instead of one per file.
-const MEASURE_DEBOUNCE: Duration = Duration::from_millis(500);
 
 pub struct App {
     pub root: PathBuf,
     pub entries: Vec<TargetEntry>,
     pub build_cache: Option<TargetEntry>,
     /// Unstable cargo build cache location. Set even with no entry yet
-    /// so the watcher covers its arrival.
+    /// so polling covers its arrival.
     pub build_cache_path: Option<PathBuf>,
     pub total_size: u64,
     pub table_state: TableState,
     pub scanning: bool,
     pub sort: SortKey,
-    /// True while filesystem watchers cover the known target dirs.
-    pub watching: bool,
     /// True while the user is typing a filter pattern.
     pub filtering: bool,
     /// Raw filter text. Compiles live. Invalid input keeps the last good pattern.
@@ -35,15 +24,6 @@ pub struct App {
     pub filter_regex: Option<Regex>,
     /// First line of the latest regex error, if the text does not compile.
     pub filter_error: Option<String>,
-    /// Watched dirs with unprocessed change events.
-    dirty: HashSet<PathBuf>,
-    /// Last time dirty entries were flushed for measuring.
-    last_flush: Instant,
-    /// Dirs missing at the last measure. Their recursive watches died with
-    /// them. Rewatch them on return.
-    missing: HashSet<PathBuf>,
-    /// A missing dir came back. Rebuild the watcher.
-    rewatch_needed: bool,
 }
 
 impl App {
@@ -59,15 +39,10 @@ impl App {
             table_state,
             scanning: true,
             sort: SortKey::default(),
-            watching: false,
             filtering: false,
             filter_text: String::new(),
             filter_regex: None,
             filter_error: None,
-            dirty: HashSet::new(),
-            last_flush: Instant::now(),
-            missing: HashSet::new(),
-            rewatch_needed: false,
         }
     }
 
@@ -78,11 +53,6 @@ impl App {
         self.entries = entries;
         self.build_cache = build_cache;
         self.scanning = false;
-        // Watched dirs changed, so pending change events no longer apply.
-        self.dirty.clear();
-        self.last_flush = Instant::now();
-        self.missing.clear();
-        self.rewatch_needed = false;
         // Keep selection in bounds after rescan.
         let visible = self.visible_indices().len();
         if visible == 0 {
@@ -144,75 +114,10 @@ impl App {
         }
     }
 
-    /// Every directory currently watched: each known `target/`, plus the
-    /// build cache location even before it has an entry.
-    pub fn target_dirs(&self) -> Vec<PathBuf> {
-        let mut dirs: Vec<PathBuf> = self
-            .entries
-            .iter()
-            .map(|e| e.project_path.join("target"))
-            .collect();
-        if let Some(cache) = &self.build_cache {
-            dirs.push(cache.project_path.clone());
-        } else if let Some(path) = &self.build_cache_path {
-            dirs.push(path.clone());
-        }
-        dirs
-    }
-
-    /// Dirs for the filesystem watcher. Each `target/` is recursive and its
-    /// parent is not. Deleting a `target/` kills its own watches. The parent
-    /// survives and reports the recreation.
-    pub fn watch_dirs(&self) -> Vec<(PathBuf, RecursiveMode)> {
-        let mut dirs = Vec::new();
-        for entry in &self.entries {
-            dirs.push((entry.project_path.clone(), RecursiveMode::NonRecursive));
-            dirs.push((entry.project_path.join("target"), RecursiveMode::Recursive));
-        }
-        let cache_path = self
-            .build_cache
-            .as_ref()
-            .map(|c| c.project_path.clone())
-            .or_else(|| self.build_cache_path.clone());
-        if let Some(path) = cache_path {
-            if let Some(parent) = path.parent() {
-                dirs.push((parent.to_path_buf(), RecursiveMode::NonRecursive));
-            }
-            dirs.push((path, RecursiveMode::Recursive));
-        }
-        dirs
-    }
-
-    /// Find which watched dir owns a changed path, if any.
-    pub fn match_target_dir(&self, path: &Path) -> Option<PathBuf> {
-        self.target_dirs()
-            .into_iter()
-            .find(|dir| path.starts_with(dir))
-    }
-
-    /// True if a missing dir came back and watches need a rebuild. It clears on read.
-    pub fn take_rewatch_needed(&mut self) -> bool {
-        std::mem::replace(&mut self.rewatch_needed, false)
-    }
-
-    /// Record a change event for later measuring.
-    pub fn mark_dirty(&mut self, target_dir: PathBuf) {
-        self.dirty.insert(target_dir);
-    }
-
-    /// Return dirty dirs once the debounce passes. Returns `None` when there is nothing due.
-    pub fn take_dirty_if_due(&mut self) -> Option<Vec<PathBuf>> {
-        if self.dirty.is_empty() || self.last_flush.elapsed() < MEASURE_DEBOUNCE {
-            return None;
-        }
-        self.last_flush = Instant::now();
-        Some(self.dirty.drain().collect())
-    }
-
     /// Apply fresh measurements. Selection stays on the same project even
     /// when the new sizes reorder the table.
     #[tracing::instrument(skip_all)]
-    pub fn apply_measurements(&mut self, measurements: Vec<Measurement>) {
+    pub fn apply_measurements(&mut self, measurements: &[Measurement]) {
         if measurements.is_empty() {
             return;
         }
@@ -223,14 +128,6 @@ impl App {
             .and_then(|i| self.entries.get(i))
             .map(|e| e.project_path.clone());
         for m in measurements {
-            if m.target_dir.is_dir() {
-                if self.missing.remove(&m.target_dir) {
-                    // Came back after deletion. Its recursive watches died with it. Rewatch it.
-                    self.rewatch_needed = true;
-                }
-            } else {
-                self.missing.insert(m.target_dir.clone());
-            }
             if let Some(entry) = self
                 .entries
                 .iter_mut()
@@ -243,16 +140,14 @@ impl App {
             {
                 cache.size = m.size;
                 cache.last_modified = m.last_modified;
-            } else if Some(&m.target_dir) == self.build_cache_path.as_ref() && m.target_dir.is_dir()
-            {
-                // The build cache arrived after startup. Give it a row now.
+            } else if Some(&m.target_dir) == self.build_cache_path.as_ref() && m.target_dir.is_dir() {
+                // The build cache arrived after startup. Give it a row now;
+                // the poller tracks it from the next reset.
                 self.build_cache = Some(TargetEntry {
                     project_path: m.target_dir.clone(),
                     size: m.size,
                     last_modified: m.last_modified,
                 });
-                // Nothing watches the new tree yet.
-                self.rewatch_needed = true;
             }
         }
         self.total_size = self.entries.iter().map(|e| e.size).sum();
@@ -357,30 +252,12 @@ mod tests {
     }
 
     #[test]
-    fn changed_path_maps_to_its_target_dir() {
-        let app = app_with_entries();
-        assert_eq!(
-            app.match_target_dir(Path::new("proj-big/target/debug/foo")),
-            Some(PathBuf::from("proj-big/target"))
-        );
-        assert_eq!(app.match_target_dir(Path::new("elsewhere/foo")), None);
-    }
-
-    #[test]
     fn measurements_update_size_and_keep_selection_on_project() {
         let mut app = app_with_entries();
         // Select proj-small (index 1 after size-desc sort).
         app.table_state.select(Some(1));
         // proj-small grows past proj-big; order flips but selection follows it.
-        app.mark_dirty(PathBuf::from("proj-small/target"));
-        let dirty = app.take_dirty_if_due();
-        // Debounce may hold the flush; force it only when due.
-        let due = dirty.unwrap_or_else(|| {
-            std::thread::sleep(std::time::Duration::from_millis(550));
-            app.take_dirty_if_due().expect("debounce passed")
-        });
-        assert_eq!(due, vec![PathBuf::from("proj-small/target")]);
-        app.apply_measurements(vec![Measurement {
+        app.apply_measurements(&[Measurement {
             target_dir: PathBuf::from("proj-small/target"),
             size: 200,
             last_modified: SystemTime::UNIX_EPOCH,
@@ -399,7 +276,7 @@ mod tests {
     #[test]
     fn unknown_measurement_is_ignored() {
         let mut app = app_with_entries();
-        app.apply_measurements(vec![Measurement {
+        app.apply_measurements(&[Measurement {
             target_dir: PathBuf::from("gone/target"),
             size: 999,
             last_modified: SystemTime::UNIX_EPOCH,
@@ -408,23 +285,9 @@ mod tests {
     }
 
     #[test]
-    fn watch_dirs_cover_targets_recursively_and_parents_plainly() {
-        let mut app = app_with_entries();
-        app.build_cache = Some(entry("/cache/build-cache", 7));
-        let dirs = app.watch_dirs();
-        assert!(dirs.contains(&(PathBuf::from("proj-big/target"), RecursiveMode::Recursive)));
-        assert!(dirs.contains(&(PathBuf::from("proj-big"), RecursiveMode::NonRecursive)));
-        assert!(dirs.contains(&(
-            PathBuf::from("/cache/build-cache"),
-            RecursiveMode::Recursive
-        )));
-        assert!(dirs.contains(&(PathBuf::from("/cache"), RecursiveMode::NonRecursive)));
-    }
-
-    #[test]
-    fn recreated_dir_requests_rewatch_once() {
+    fn deleted_and_recreated_dir_zeroes_then_restores_row() {
         use crate::scan::measure_target;
-        let root = std::env::temp_dir().join("targeter-test-rewatch");
+        let root = std::env::temp_dir().join("targeter-test-recreate");
         let _ = std::fs::remove_dir_all(&root);
         std::fs::create_dir_all(root.join("proj/target")).unwrap();
         let mut app = App::new(root.clone());
@@ -438,43 +301,21 @@ mod tests {
         );
         let target = root.join("proj/target");
 
-        // Deletion zeroes the row but asks for no rebuild: the parent watch
-        // survives and already covers the recreation.
+        // Deletion zeroes the row.
         std::fs::remove_dir_all(&target).unwrap();
-        app.apply_measurements(vec![measure_target(&target)]);
+        app.apply_measurements(&[measure_target(&target)]);
         assert_eq!(app.entries[0].size, 0);
-        assert!(!app.take_rewatch_needed());
 
-        // Recreation restores the row and asks for exactly one rebuild, so
-        // the new tree gets recursive watches again.
+        // Recreation restores the row.
         std::fs::create_dir_all(target.join("debug")).unwrap();
         std::fs::write(target.join("debug/a.bin"), "1234").unwrap();
-        app.apply_measurements(vec![measure_target(&target)]);
+        app.apply_measurements(&[measure_target(&target)]);
         assert!(app.entries[0].size > 0);
-        assert!(app.take_rewatch_needed());
-        assert!(!app.take_rewatch_needed());
         let _ = std::fs::remove_dir_all(&root);
     }
 
     #[test]
-    fn prospective_cache_is_watched_and_matched() {
-        let mut app = app_with_entries();
-        app.build_cache = None;
-        app.build_cache_path = Some(PathBuf::from("/cache/build-cache"));
-        let dirs = app.watch_dirs();
-        assert!(dirs.contains(&(
-            PathBuf::from("/cache/build-cache"),
-            RecursiveMode::Recursive
-        )));
-        assert!(dirs.contains(&(PathBuf::from("/cache"), RecursiveMode::NonRecursive)));
-        assert_eq!(
-            app.match_target_dir(Path::new("/cache/build-cache/content/x")),
-            Some(PathBuf::from("/cache/build-cache"))
-        );
-    }
-
-    #[test]
-    fn first_cache_measurement_creates_entry_and_rewatches() {
+    fn first_cache_measurement_creates_entry() {
         use crate::scan::measure_target;
         let root = std::env::temp_dir().join("targeter-test-cache-arrival");
         let _ = std::fs::remove_dir_all(&root);
@@ -483,18 +324,16 @@ mod tests {
         app.build_cache_path = Some(root.join("build-cache"));
         assert!(app.build_cache.is_none());
 
-        // Nothing there yet: no row, no rebuild.
-        app.apply_measurements(vec![measure_target(&root.join("build-cache"))]);
+        // Nothing there yet: no row.
+        app.apply_measurements(&[measure_target(&root.join("build-cache"))]);
         assert!(app.build_cache.is_none());
-        assert!(!app.take_rewatch_needed());
 
-        // The cache appears: a row is created and watches are rebuilt for it.
+        // The cache appears: a row is created.
         std::fs::create_dir_all(root.join("build-cache/content")).unwrap();
         std::fs::write(root.join("build-cache/content/a.bin"), "12345678").unwrap();
-        app.apply_measurements(vec![measure_target(&root.join("build-cache"))]);
+        app.apply_measurements(&[measure_target(&root.join("build-cache"))]);
         let cache = app.build_cache.as_ref().expect("cache row created");
         assert!(cache.size > 0);
-        assert!(app.take_rewatch_needed());
     }
 
     #[test]
