@@ -5,7 +5,7 @@ use std::{
 };
 
 use crossterm::{
-    event::{self, Event, KeyCode, KeyModifiers},
+    event::{self, Event},
     execute,
     terminal::{EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode},
 };
@@ -16,10 +16,12 @@ use ratatui::backend::CrosstermBackend;
 
 use app::App;
 use args::Args;
+use input::{Action, handle_key};
 use scan::{Measurement, TargetEntry};
 
 mod app;
 mod args;
+mod input;
 mod scan;
 mod ui;
 
@@ -111,50 +113,17 @@ fn run(terminal: &mut Terminal<CrosstermBackend<std::io::Stdout>>, root: PathBuf
 
         if event::poll(Duration::from_millis(100)).wrap_err("polling terminal events")? {
             match event::read().wrap_err("reading terminal event")? {
-                Event::Key(key) => {
-                    // Ctrl+C always quits, even mid-filter.
-                    if key.code == KeyCode::Char('c') && key.modifiers == KeyModifiers::CONTROL {
-                        return Ok(());
+                Event::Key(key) => match handle_key(&mut app, key) {
+                    Action::Continue => {}
+                    Action::Quit => return Ok(()),
+                    Action::Rescan => {
+                        app.scanning = true;
+                        app.watching = false;
+                        _watcher = None;
+                        watcher_rx = None;
+                        scan_rx = spawn_scan(&app.root);
                     }
-                    if app.filtering {
-                        match key.code {
-                            KeyCode::Enter => app.filtering = false,
-                            KeyCode::Esc => app.filtering = false,
-                            KeyCode::Backspace => {
-                                app.filter_text.pop();
-                                let text = app.filter_text.clone();
-                                app.set_filter(text);
-                            }
-                            KeyCode::Char('u') if key.modifiers == KeyModifiers::CONTROL => {
-                                app.set_filter(String::new());
-                            }
-                            KeyCode::Char(c) => {
-                                app.filter_text.push(c);
-                                let text = app.filter_text.clone();
-                                app.set_filter(text);
-                            }
-                            _ => {}
-                        }
-                        continue;
-                    }
-                    match (key.code, key.modifiers) {
-                        (KeyCode::Char('q'), _) | (KeyCode::Esc, _) => return Ok(()),
-                        (KeyCode::Char('/'), _) => app.filtering = true,
-                        (KeyCode::Down, _) | (KeyCode::Char('j'), _) => app.next(),
-                        (KeyCode::Up, _) | (KeyCode::Char('k'), _) => app.previous(),
-                        (KeyCode::Char('g'), _) => app.top(),
-                        (KeyCode::Char('G'), _) => app.bottom(),
-                        (KeyCode::Char('s'), _) => app.cycle_sort(),
-                        (KeyCode::Char('r'), _) => {
-                            app.scanning = true;
-                            app.watching = false;
-                            _watcher = None;
-                            watcher_rx = None;
-                            scan_rx = spawn_scan(&app.root);
-                        }
-                        _ => {}
-                    }
-                }
+                },
                 Event::Resize(_, _) => {}
                 _ => {}
             }
