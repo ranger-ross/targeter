@@ -110,36 +110,35 @@ pub fn render(frame: &mut Frame, app: &mut App) {
                 .add_modifier(Modifier::BOLD),
         );
 
-        let rows = visible
-            .iter()
-            .enumerate()
-            .filter_map(|(pos, &i)| {
-                app.entries.get(i).map(|e| {
-                    let name = if Some(pos) == selected {
-                        Text::styled(
-                            e.project_name(),
-                            Style::default().add_modifier(Modifier::BOLD),
-                        )
-                    } else {
-                        Text::from(e.project_name())
-                    };
-                    let mut row = Row::new([
-                        Cell::from(name),
-                        Cell::from(right_text(format_size_opt(e.size))),
-                        Cell::from(format_modified_entry(e)),
-                        Cell::from(Text::styled(
-                            display_path(&e.project_path),
-                            Style::default().fg(crate::ui::theme::DIM),
-                        )),
-                    ])
-                    .height(1);
-                    // Deleted rows sink visually too.
-                    if e.size.is_some() && e.last_modified.is_none() {
-                        row = row.style(Style::default().fg(crate::ui::theme::DIM));
-                    }
-                    row
-                })
-            });
+        let rows = visible.iter().enumerate().filter_map(|(pos, &i)| {
+            app.entries.get(i).map(|e| {
+                let name = if Some(pos) == selected {
+                    Text::styled(
+                        e.project_name(),
+                        Style::default().add_modifier(Modifier::BOLD),
+                    )
+                } else {
+                    Text::from(e.project_name())
+                };
+                let mut size_text = Text::styled(format_size_opt(e.size), size_style(e.size));
+                size_text.alignment = Some(Alignment::Right);
+                let mut row = Row::new([
+                    Cell::from(name),
+                    Cell::from(size_text),
+                    Cell::from(format_modified_entry(e)),
+                    Cell::from(Text::styled(
+                        display_path(&e.project_path),
+                        Style::default().fg(crate::ui::theme::DIM),
+                    )),
+                ])
+                .height(1);
+                // Deleted rows sink visually too.
+                if e.size.is_some() && e.last_modified.is_none() {
+                    row = row.style(Style::default().fg(crate::ui::theme::DIM));
+                }
+                row
+            })
+        });
         let widths = [
             Constraint::Max(24),
             Constraint::Length(12),
@@ -155,7 +154,8 @@ pub fn render(frame: &mut Frame, app: &mut App) {
             .highlight_spacing(HighlightSpacing::Always);
         frame.render_stateful_widget(table, table_area, &mut app.table_state);
     }
-
+    render_footer(frame, footer_area, app);
+}
 /// Right-aligned cell text, for the Size column and its header.
 fn right_text(text: impl Into<String>) -> Text<'static> {
     let mut t = Text::from(text.into());
@@ -163,7 +163,19 @@ fn right_text(text: impl Into<String>) -> Text<'static> {
     t
 }
 
-    render_footer(frame, footer_area, app);
+/// Heat color for the Size cell. Tiny and pending read dim, large
+/// yellow, huge red.
+fn size_style(size: Option<u64>) -> Style {
+    const SMALL: u64 = 50 * 1024 * 1024;
+    const LARGE: u64 = 1024 * 1024 * 1024;
+    const HUGE: u64 = 5 * 1024 * 1024 * 1024;
+    match size {
+        None => Style::default().fg(crate::ui::theme::DIM),
+        Some(s) if s < SMALL => Style::default().fg(crate::ui::theme::DIM),
+        Some(s) if s < LARGE => Style::default(),
+        Some(s) if s < HUGE => Style::default().fg(crate::ui::theme::AMBER),
+        _ => Style::default().fg(crate::ui::theme::ROSE),
+    }
 }
 
 /// Binary-unit sizes matching `du -h`. Pending entries read as `-`.
@@ -281,11 +293,8 @@ fn render_footer(frame: &mut Frame, area: Rect, app: &App) {
         .map(|s: &Span| s.content.chars().count() as u16)
         .sum();
     let right_width = right_width.min(inner.width);
-    let [left_area, right_area] = Layout::horizontal([
-        Constraint::Min(0),
-        Constraint::Length(right_width),
-    ])
-    .areas(inner);
+    let [left_area, right_area] =
+        Layout::horizontal([Constraint::Min(0), Constraint::Length(right_width)]).areas(inner);
     frame.render_widget(Paragraph::new(Line::from(left)), left_area);
     frame.render_widget(
         Paragraph::new(Line::from(right)).alignment(Alignment::Right),
@@ -308,10 +317,7 @@ fn footer_actions(app: &App) -> (Vec<Span<'static>>, Vec<Span<'static>>) {
     left.extend(hint("↑↓", "Navigate".to_string()));
     left.extend(hint("g/G", "Top/Bottom".to_string()));
     left.extend(hint("/", "Filter".to_string()));
-    left.extend(hint(
-        "s",
-        format!("Sort: {}", app.sort.label()),
-    ));
+    left.extend(hint("s", format!("Sort: {}", app.sort.label())));
     left.extend(hint("r", "Rescan".to_string()));
     left.extend(hint("d", "Delete".to_string()));
     left.extend(hint("q", "Quit".to_string()));
@@ -321,7 +327,7 @@ fn footer_actions(app: &App) -> (Vec<Span<'static>>, Vec<Span<'static>>) {
         right.push(Span::styled(
             "Scanning…",
             Style::default()
-                .fg(Color::Green)
+                .fg(crate::ui::theme::MINT)
                 .add_modifier(Modifier::BOLD),
         ));
     }
@@ -344,22 +350,23 @@ fn footer_actions(app: &App) -> (Vec<Span<'static>>, Vec<Span<'static>>) {
         }
         right.push(Span::styled(
             format!("Delete failed: {err}"),
-            Style::default().fg(Color::Red),
+            Style::default().fg(crate::ui::theme::ROSE),
         ));
     }
     (left, right)
 }
 
 fn footer_filter(app: &App) -> (Vec<Span<'static>>, Vec<Span<'static>>) {
-    let mut left = vec![
-        Span::styled(
-            format!("/{}/", app.filter_text),
-            Style::default().add_modifier(Modifier::BOLD),
-        ),
-    ];
+    let mut left = vec![Span::styled(
+        format!("/{}/", app.filter_text),
+        Style::default().add_modifier(Modifier::BOLD),
+    )];
     if let Some(err) = &app.filter_error {
         left.push(Span::raw("  "));
-        left.push(Span::styled(err.clone(), Style::default().fg(Color::Red)));
+        left.push(Span::styled(
+            err.clone(),
+            Style::default().fg(crate::ui::theme::ROSE),
+        ));
     }
     let mut right = Vec::new();
     right.extend(hint("Enter", "Done".to_string()));
@@ -480,5 +487,20 @@ mod tests {
         for want in ["PROJECT", "SIZE", "MODIFIED", "PATH", "▶"] {
             assert!(text.contains(want), "missing {want}");
         }
+    }
+
+    #[test]
+    fn size_cells_heat_with_magnitude() {
+        const MIB: u64 = 1024 * 1024;
+        const GIB: u64 = 1024 * MIB;
+        let fg = |s: Option<u64>| size_style(s).fg;
+        assert_eq!(fg(None), Some(crate::ui::theme::DIM));
+        assert_eq!(fg(Some(0)), Some(crate::ui::theme::DIM));
+        assert_eq!(fg(Some(50 * MIB - 1)), Some(crate::ui::theme::DIM));
+        assert_eq!(fg(Some(50 * MIB)), None);
+        assert_eq!(fg(Some(GIB - 1)), None);
+        assert_eq!(fg(Some(GIB)), Some(crate::ui::theme::AMBER));
+        assert_eq!(fg(Some(5 * GIB - 1)), Some(crate::ui::theme::AMBER));
+        assert_eq!(fg(Some(5 * GIB)), Some(crate::ui::theme::ROSE));
     }
 }

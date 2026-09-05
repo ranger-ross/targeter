@@ -13,7 +13,12 @@ pub const BORDER: Color = Color::Rgb(0x77, 0x7d, 0x88);
 pub const SELECTED_BG: Color = Color::Rgb(0x31, 0x36, 0x3f);
 pub const MUTED: Color = Color::Rgb(0x77, 0x7d, 0x88);
 pub const DIM: Color = Color::Rgb(0x5f, 0x66, 0x73);
-
+/// Vivid coral for huge sizes and errors.
+pub const ROSE: Color = Color::Rgb(0xf4, 0x6b, 0x6b);
+/// Bright warm yellow for large sizes.
+pub const AMBER: Color = Color::Rgb(0xf2, 0xd0, 0x2b);
+/// Bright mint for the scanning indicator.
+pub const MINT: Color = Color::Rgb(0x4a, 0xde, 0x80);
 /// Gray card with rounded borders. Titles render as dim `─` plus bold label.
 pub fn card<'a>(title: &'a str) -> Block<'a> {
     base().title(Line::from(vec![
