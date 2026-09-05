@@ -1,4 +1,4 @@
-use std::path::PathBuf;
+use std::{path::PathBuf, time::Instant};
 
 use ratatui::widgets::TableState;
 use regex::Regex;
@@ -16,6 +16,8 @@ pub struct App {
     pub table_state: TableState,
     pub scanning: bool,
     pub sort: SortKey,
+    /// When the current load started. The shimmer band is wall-clock driven.
+    pub loading_start: Instant,
     /// True while the user is typing a filter pattern.
     pub filtering: bool,
     /// Raw filter text. Compiles live. Invalid input keeps the last good pattern.
@@ -39,6 +41,7 @@ impl App {
             table_state,
             scanning: true,
             sort: SortKey::default(),
+            loading_start: Instant::now(),
             filtering: false,
             filter_text: String::new(),
             filter_regex: None,
@@ -164,6 +167,11 @@ impl App {
             self.table_state
                 .select(pos.or_else(|| visible.first().map(|_| 0)));
         }
+    }
+    /// Mark a new load: shows the shimmer and restarts its sweep.
+    pub fn begin_scan(&mut self) {
+        self.scanning = true;
+        self.loading_start = Instant::now();
     }
 
     pub fn next(&mut self) {

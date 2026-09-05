@@ -22,6 +22,7 @@ use scan::{TargetEntry, resolve_root};
 mod app;
 mod args;
 mod input;
+mod loading;
 mod poll;
 mod scan;
 mod trace;
@@ -77,14 +78,20 @@ fn run(terminal: &mut Terminal<CrosstermBackend<std::io::Stdout>>, root: PathBuf
         }
 
         poller.poll(&mut app);
-
-        if event::poll(Duration::from_millis(100)).wrap_err("polling terminal events")? {
+        // 60 fps if we are loading
+        // 10 fps if we aren't loading
+        let frame_budget = if app.scanning {
+            Duration::from_millis(16)
+        } else {
+            Duration::from_millis(100)
+        };
+        if event::poll(frame_budget).wrap_err("polling terminal events")? {
             match event::read().wrap_err("reading terminal event")? {
                 Event::Key(key) => match handle_key(&mut app, key) {
                     Action::Continue => {}
                     Action::Quit => return Ok(()),
                     Action::Rescan => {
-                        app.scanning = true;
+                        app.begin_scan();
                         scan_rx = spawn_scan(&app.root);
                     }
                 },

@@ -59,8 +59,14 @@ pub fn render(frame: &mut Frame, app: &mut App) {
 
     if app.scanning {
         frame.render_widget(
-            Paragraph::new("Scanning for target/ directories…")
-                .block(Block::default().borders(Borders::ALL).title("projects")),
+            Paragraph::new(
+                crate::loading::Loading::new(
+                    "Scanning for target/ directories…",
+                    app.loading_start.elapsed(),
+                )
+                .line(),
+            )
+            .block(Block::default().borders(Borders::ALL).title("projects")),
             table_area,
         );
     } else if app.entries.is_empty() {
