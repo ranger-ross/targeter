@@ -1,40 +1,22 @@
 //! Resolve cargo output dirs from `.cargo/config.toml` files.
 //!
-//! Cargo lets any ancestor `.cargo/config.toml` (plus `$CARGO_HOME`) set
-//! `build.target-dir` and `build.build-dir`. A project using those keys
-//! leaves no local `target/`, so discovery must resolve the real dirs.
-//!
-//! Perf: every config file parses at most once per scan. Ancestor probes
-//! memoize misses too, so per-project resolution is pure `HashMap` lookups
-//! plus path joins. No TOML dependency: the files are KBs and only two
-//! string keys under `[build]` matter, so a single line pass is faster
-//! than a general parser and keeps unrelated keys free.
-//!
-//! Limits: `include` directives are not followed, and
-//! `{workspace-path-hash}` (or any unknown template) in `build.build-dir`
-//! skips that dir instead of guessing.
+//! We purposefully do not follow the full Cargo config resolving rules
+//! as that be really slow. We just do our best to semi handle the common
+//! usecases while balancing the performance.
 
 use std::{
     collections::HashMap,
     path::{Component, Path, PathBuf},
 };
 
-/// Hierarchical resolver for `build.target-dir` / `build.build-dir`.
+/// Hierarchical resolver for target-dir / build-dir
 pub struct Resolver {
     /// Lowest precedence: `$CARGO_HOME/config.toml`.
     home: Option<ConfigFile>,
-    /// Ancestor dir -> parsed `.cargo` config. `None` memoizes a miss.
     cache: HashMap<PathBuf, Option<ConfigFile>>,
     env_target: Option<PathBuf>,
     env_build: Option<PathBuf>,
     cargo_home: PathBuf,
-}
-
-struct ConfigFile {
-    /// Dir whose `.cargo/` held the file. Relative values resolve here.
-    base: PathBuf,
-    target_dir: Option<String>,
-    build_dir: Option<String>,
 }
 
 impl Resolver {
@@ -149,15 +131,22 @@ impl Resolver {
     }
 }
 
+impl Default for Resolver {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 /// `.cargo/config.toml` under `dir`, honoring the same precedence.
 fn config_in_cargo_dir(dir: &Path) -> Option<PathBuf> {
     config_in(&dir.join(".cargo"))
 }
 
-impl Default for Resolver {
-    fn default() -> Self {
-        Self::new()
-    }
+struct ConfigFile {
+    /// Dir whose `.cargo/` held the file.
+    base: PathBuf,
+    target_dir: Option<String>,
+    build_dir: Option<String>,
 }
 
 /// One project/output pair found by discovery.
