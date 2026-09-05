@@ -226,46 +226,106 @@ fn render_build_cache(frame: &mut Frame, area: Rect, app: &App) {
 }
 
 fn render_footer(frame: &mut Frame, area: Rect, app: &App) {
-    if app.filtering {
-        let line = match &app.filter_error {
-            Some(err) => format!("/{}/ ! {}", app.filter_text, err),
-            None => format!("/{}/", app.filter_text),
-        };
-        frame.render_widget(
-            Paragraph::new(Line::from(vec![
-                Span::raw(line),
-                Span::raw(" · enter done · esc clear · ^U clear"),
-            ]))
-            .block(crate::ui::theme::card("filter (regex)")),
-            area,
-        );
-        return;
-    }
-    let status = if app.scanning {
-        "scanning…".to_string()
+    let block = crate::ui::theme::card_plain();
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+    let (left, right) = if app.filtering {
+        footer_filter(app)
     } else {
-        format!("sort: {} (s)", app.sort.label())
+        footer_actions(app)
     };
-    let filter = if app.filter_text.is_empty() {
-        String::new()
-    } else {
-        format!(" · filter: /{}/ · esc clears", app.filter_text)
-    };
-    let delete = match &app.delete_error {
-        Some(err) => format!(" · delete failed: {err}"),
-        None => String::new(),
-    };
+    // Right side keeps its width; the hints take the rest.
+    let right_width: u16 = right
+        .iter()
+        .map(|s: &Span| s.content.chars().count() as u16)
+        .sum();
+    let right_width = right_width.min(inner.width);
+    let [left_area, right_area] = Layout::horizontal([
+        Constraint::Min(0),
+        Constraint::Length(right_width),
+    ])
+    .areas(inner);
+    frame.render_widget(Paragraph::new(Line::from(left)), left_area);
     frame.render_widget(
-        Paragraph::new(Line::from(vec![
-            Span::raw("↑/↓ navigate · g/G top/bottom · s "),
-            Span::raw(status),
-            Span::raw(" · / filter · r rescan · d delete · q quit"),
-            Span::raw(filter),
-            Span::raw(delete),
-        ]))
-        .block(crate::ui::theme::card_plain()),
-        area,
+        Paragraph::new(Line::from(right)).alignment(ratatui::layout::Alignment::Right),
+        right_area,
     );
+}
+
+/// Bright key plus dim action, with a trailing gap.
+fn hint(key: &'static str, action: String) -> Vec<Span<'static>> {
+    vec![
+        Span::styled(key, Style::default().add_modifier(Modifier::BOLD)),
+        Span::raw(" "),
+        Span::styled(action, Style::default().fg(crate::ui::theme::MUTED)),
+        Span::raw("  "),
+    ]
+}
+
+fn footer_actions(app: &App) -> (Vec<Span<'static>>, Vec<Span<'static>>) {
+    let mut left = Vec::new();
+    left.extend(hint("↑↓", "Navigate".to_string()));
+    left.extend(hint("g/G", "Top/Bottom".to_string()));
+    left.extend(hint("/", "Filter".to_string()));
+    left.extend(hint(
+        "s",
+        format!("Sort: {}", app.sort.label()),
+    ));
+    left.extend(hint("r", "Rescan".to_string()));
+    left.extend(hint("d", "Delete".to_string()));
+    left.extend(hint("q", "Quit".to_string()));
+    left.pop();
+    let mut right = Vec::new();
+    if app.scanning {
+        right.push(Span::styled(
+            "Scanning…",
+            Style::default()
+                .fg(Color::Green)
+                .add_modifier(Modifier::BOLD),
+        ));
+    }
+    if !app.filter_text.is_empty() {
+        if !right.is_empty() {
+            right.push(Span::raw("  "));
+        }
+        right.push(Span::styled(
+            "Filter: ",
+            Style::default().fg(crate::ui::theme::MUTED),
+        ));
+        right.push(Span::styled(
+            format!("/{}/", app.filter_text),
+            Style::default().add_modifier(Modifier::BOLD),
+        ));
+    }
+    if let Some(err) = &app.delete_error {
+        if !right.is_empty() {
+            right.push(Span::raw("  "));
+        }
+        right.push(Span::styled(
+            format!("Delete failed: {err}"),
+            Style::default().fg(Color::Red),
+        ));
+    }
+    (left, right)
+}
+
+fn footer_filter(app: &App) -> (Vec<Span<'static>>, Vec<Span<'static>>) {
+    let mut left = vec![
+        Span::styled(
+            format!("/{}/", app.filter_text),
+            Style::default().add_modifier(Modifier::BOLD),
+        ),
+    ];
+    if let Some(err) = &app.filter_error {
+        left.push(Span::raw("  "));
+        left.push(Span::styled(err.clone(), Style::default().fg(Color::Red)));
+    }
+    let mut right = Vec::new();
+    right.extend(hint("Enter", "Done".to_string()));
+    right.extend(hint("Esc", "Clear".to_string()));
+    right.extend(hint("^U", "Clear".to_string()));
+    right.pop();
+    (left, right)
 }
 
 #[cfg(test)]
@@ -324,5 +384,35 @@ mod tests {
             last_modified: None,
         };
         assert_eq!(format_modified_entry(&pending), "-");
+    }
+
+    #[test]
+    fn footer_bar_shows_hints_and_sort_without_dup_key() {
+        use ratatui::{Terminal, backend::TestBackend};
+        let mut app = App::new(std::path::PathBuf::from("."));
+        app.finish_scan(None);
+        let backend = TestBackend::new(100, 24);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal.draw(|f| render(f, &mut app)).unwrap();
+        let buf = terminal.backend().buffer().clone();
+        let mut text = String::new();
+        for y in 0..buf.area.height {
+            for x in 0..buf.area.width {
+                text.push_str(buf[(x, y)].symbol());
+            }
+            text.push('\n');
+        }
+        for want in [
+            "Navigate",
+            "Top/Bottom",
+            "Filter",
+            "Sort: size",
+            "Rescan",
+            "Delete",
+            "Quit",
+        ] {
+            assert!(text.contains(want), "missing {want}");
+        }
+        assert!(!text.contains("(s)"), "duplicated sort key hint");
     }
 }
