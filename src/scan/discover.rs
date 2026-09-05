@@ -50,10 +50,12 @@ pub fn scan_stream(root: &Path, tx: mpsc::Sender<ScanEvent>) {
     if tx.send(ScanEvent::Discovered(projects.clone())).is_err() {
         return;
     }
-    projects.par_iter().for_each_with(tx.clone(), |tx, project_path| {
-        let m = measure_target(&project_path.join("target"));
-        let _ = tx.send(ScanEvent::Measured(m));
-    });
+    projects
+        .par_iter()
+        .for_each_with(tx.clone(), |tx, project_path| {
+            let m = measure_target(&project_path.join("target"));
+            let _ = tx.send(ScanEvent::Measured(m));
+        });
     let build_cache = super::cache::build_cache_entry();
     let _ = tx.send(ScanEvent::Done { build_cache });
 }
@@ -139,10 +141,7 @@ mod tests {
         // Disk usage, not apparent length: blocks for the file plus its dirs.
         let m = measure_target(&root.join("proj-a/target"));
         assert!(m.size >= 5);
-        assert!(
-            m.last_modified
-                .is_some_and(|t| t > SystemTime::UNIX_EPOCH)
-        );
+        assert!(m.last_modified.is_some_and(|t| t > SystemTime::UNIX_EPOCH));
         let _ = fs::remove_dir_all(&root);
     }
 
