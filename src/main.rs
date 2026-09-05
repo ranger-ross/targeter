@@ -73,14 +73,13 @@ fn run(terminal: &mut Terminal<CrosstermBackend<std::io::Stdout>>, root: PathBuf
             app.set_entries(entries, build_cache);
             scan_rx = None;
             poller.reset(&app);
-            // The scan frees tens of MB of transient buffers; hand fully-free
-            // pages back so idle RSS reflects live data, not arena leftovers.
+            // The scan leaves tens of MB of transient buffers. Hand free
+            // pages back so idle RSS reflects live data.
             trim_heap();
         }
 
         poller.poll(&mut app);
-        // 60 fps if we are loading
-        // 10 fps if we aren't loading
+        // 60fps while loading, 10fps otherwise.
         let frame_budget = if app.scanning {
             Duration::from_millis(16)
         } else {
@@ -123,7 +122,7 @@ fn trim_heap() {
         unsafe extern "C" {
             fn malloc_trim(pad: usize) -> i32;
         }
-        // SAFETY: malloc_trim(0) only releases free pages; live blocks stay.
+        // SAFETY: malloc_trim only releases free pages. Live blocks stay.
         unsafe {
             malloc_trim(0);
         }

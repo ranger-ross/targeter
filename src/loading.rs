@@ -1,12 +1,9 @@
 //! Shimmer sweep for loading text, ported from omp's `theme/shimmer.ts`.
 //!
-//! The text rests at a dim base color while a narrow bright band sweeps
-//! left to right at a fixed cells-per-second velocity. Each character
-//! quantizes into one of three tiers by its distance to the band crest:
-//! dim base, gray approach, bold amber crest.
-//!
-//! Band position is wall-clock driven, so smoothness is independent of
-//! message length and frame cadence.
+//! Text rests dim while a bright band sweeps through it. Each char lands
+//! in one of three tiers by distance to the crest: dim base, gray
+//! approach, bold blue crest. Band position reads wall-clock time, so any
+//! string stays smooth at any frame rate.
 //!
 //! ```ignore
 //! // In the render pass:
@@ -27,8 +24,7 @@ use ratatui::{
     widgets::{Paragraph, Widget},
 };
 
-/// Band travel speed in cells per second. Fixed velocity keeps the
-/// per-frame step small for any string length.
+/// Cells per second. One fixed velocity keeps every string smooth.
 const SPEED_CELLS_PER_S: f32 = 30.0;
 /// Dead cells before/after the text so the band slides in and out.
 const PADDING: f32 = 10.0;
@@ -46,14 +42,11 @@ const fn rgb(hex: u32) -> Rgb {
 }
 
 /// Three-tier color stack a character cycles through as the band sweeps.
+/// Low is the resting base, mid the approach, high the crest.
 pub struct ShimmerPalette {
-    /// Chars outside/at the edge of the band.
     pub low: Rgb,
-    /// Chars approaching the crest.
     pub mid: Rgb,
-    /// Band crest.
     pub high: Rgb,
-    /// Bold the crest tier.
     pub bold_crest: bool,
 }
 /// omp dark theme base (dim `#5f6673`, muted `#777d88`) with a blue crest
@@ -153,11 +146,7 @@ pub fn shimmer_line(
     Line::from(spans)
 }
 
-/// Renderable shimmer indicator.
-///
-/// ```ignore
-/// frame.render_widget(Loading::new("Working…", elapsed), area);
-/// ```
+/// Renderable shimmer indicator. See the module docs for usage.
 pub struct Loading<'a> {
     text: &'a str,
     elapsed: Duration,

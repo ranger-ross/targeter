@@ -18,8 +18,7 @@ pub fn render(frame: &mut Frame, app: &mut App) {
         Constraint::Length(3),
     ])
     .areas(area);
-    // The cache card only earns its half of the top row once a measurement
-    // exists. During the initial load there is nothing to show yet.
+    // The cache card earns half the top row once a measurement exists.
     let show_cache = app.build_cache.is_some();
     let (summary_area, cache_area) = if show_cache {
         let [left, right] =
@@ -150,8 +149,8 @@ fn display_path(path: &std::path::Path) -> String {
         && !home.is_empty()
     {
         let home = std::path::PathBuf::from(home);
-        // Compare against the canonicalized home so symlinked `$HOME`
-        // (e.g. macOS `/home` -> `/private/home`) still contracts.
+        // Match the canonicalized home, so a symlinked `$HOME` (macOS
+        // `/home` to `/private/home`) still contracts.
         let canon_home = std::fs::canonicalize(&home).unwrap_or(home);
         if let Ok(rel) = abs.strip_prefix(&canon_home) {
             if rel.as_os_str().is_empty() {
@@ -163,22 +162,20 @@ fn display_path(path: &std::path::Path) -> String {
     abs.display().to_string()
 }
 
-/// Relative age ("now", "30 seconds ago", "1 minute ago", "yesterday", ...).
-/// Bucketing and pluralization come from the `timeago` crate, with two
-/// overrides: under 5s reads as "now", and 24-48h reads as "yesterday"
-/// instead of the crate's "1 day ago". The 24-48h window is exact so the
-/// phrase "1 day ago" can never surface alongside "yesterday".
+/// Relative age ("now", "30 seconds ago", "yesterday", ...). Bucketing and
+/// pluralization come from `timeago`, with two overrides: under 5s reads
+/// "now", and 24-48h reads "yesterday", never "1 day ago".
 fn format_modified(last_modified: std::time::SystemTime) -> String {
     format_modified_at(last_modified, std::time::SystemTime::now())
 }
 
-/// Testable core: `now` injected so boundary cases don't depend on the clock.
+/// Testable core: injected `now` frees boundary tests from the clock.
 /// Future timestamps (clock skew, just-written files) read as "now".
 fn format_modified_at(last_modified: std::time::SystemTime, now: std::time::SystemTime) -> String {
     format_age(now.duration_since(last_modified).unwrap_or_default())
 }
 
-/// Pure duration rendering; takes a fixed age so tests are deterministic.
+/// Render a fixed age so tests stay deterministic.
 fn format_age(age: std::time::Duration) -> String {
     if age.as_secs() < 5 {
         return "now".to_string();
@@ -189,8 +186,8 @@ fn format_age(age: std::time::Duration) -> String {
     timeago::Formatter::new().convert(age)
 }
 
-/// Timestamp for display; a deleted dir has no mtime, so it reads as
-/// "deleted" instead of rendering the epoch as "56 years ago".
+/// Timestamp for display. A deleted dir has no mtime, so it reads as
+/// "deleted" instead of "56 years ago".
 fn format_modified_opt(last_modified: Option<std::time::SystemTime>) -> String {
     match last_modified {
         Some(t) => format_modified(t),

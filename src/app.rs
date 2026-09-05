@@ -16,7 +16,7 @@ pub struct App {
     pub table_state: TableState,
     pub scanning: bool,
     pub sort: SortKey,
-    /// When the current load started. The shimmer band is wall-clock driven.
+    /// Load start. The shimmer band reads wall-clock time.
     pub loading_start: Instant,
     /// True while the user is typing a filter pattern.
     pub filtering: bool,
@@ -146,8 +146,8 @@ impl App {
             } else if Some(&m.target_dir) == self.build_cache_path.as_ref()
                 && m.last_modified.is_some()
             {
-                // The build cache arrived after startup. Give it a row now;
-                // the poller tracks it from the next reset.
+                // The build cache arrived after startup, so give it a row now.
+                // The poller tracks it from the next reset.
                 self.build_cache = Some(TargetEntry {
                     project_path: m.target_dir.clone(),
                     size: m.size,
@@ -168,7 +168,7 @@ impl App {
                 .select(pos.or_else(|| visible.first().map(|_| 0)));
         }
     }
-    /// Mark a new load: shows the shimmer and restarts its sweep.
+    /// Start a load and restart the shimmer sweep.
     pub fn begin_scan(&mut self) {
         self.scanning = true;
         self.loading_start = Instant::now();
@@ -211,7 +211,7 @@ impl App {
             SortKey::Size => entries.sort_by_key(|a| std::cmp::Reverse(a.size)),
             SortKey::Modified => {
                 entries.sort_by(|a, b| match (&a.last_modified, &b.last_modified) {
-                    // Deleted dirs have no timestamp; they always sink.
+                    // Deleted dirs have no timestamp. They always sink.
                     (None, None) => std::cmp::Ordering::Equal,
                     (None, _) => std::cmp::Ordering::Greater,
                     (_, None) => std::cmp::Ordering::Less,
@@ -274,7 +274,7 @@ mod tests {
         let mut app = app_with_entries();
         // Select proj-small (index 1 after size-desc sort).
         app.table_state.select(Some(1));
-        // proj-small grows past proj-big; order flips but selection follows it.
+        // proj-small grows past proj-big. Order flips but selection follows it.
         app.apply_measurements(&[Measurement {
             target_dir: PathBuf::from("proj-small/target"),
             size: 200,

@@ -1,9 +1,8 @@
 //! Adaptive periodic re-measurement, replacing filesystem watchers.
 //!
-//! Recursive inotify watches cost one watch per subdirectory plus two full
-//! paths per watch inside the backend (~145MB on ~/projects), so freshness
-//! comes from polling instead. Each target dir has a tier driving its
-//! interval; any detected size/mtime change promotes it to Active.
+//! Recursive inotify costs a watch per subdir plus two paths per watch
+//! (~145MB on ~/projects), so freshness comes from polling instead. Each
+//! target dir has a tiered interval. Any size/mtime change promotes it.
 
 use std::{
     path::PathBuf,
@@ -21,14 +20,12 @@ use crate::{
 /// Unknown dirs poll fast until they prove idle.
 const UNKNOWN_INTERVAL: Duration = Duration::from_secs(10);
 /// Consecutive unchanged Unknown polls before relaxing to SemiDormant.
-/// Six polls at 10s ≈ 60s idle. (The plan's "(30s)" doesn't match 6 × 10s,
-///
-/// so the six-poll count wins; shout if 30s was meant.)
+/// Six 10s polls cover about 60s idle.
 const UNKNOWN_QUIET_LIMIT: u32 = 6;
 /// Active dirs (recently changed, or deleted so a rebuild is caught fast)
 /// poll fastest and never relax.
 const ACTIVE_INTERVAL: Duration = Duration::from_secs(3);
-/// Semi-dormant dirs proved idle once; poll slowly.
+/// Semi-dormant dirs proved idle once. They poll slowly.
 const SEMI_INTERVAL: Duration = Duration::from_secs(30);
 /// Consecutive unchanged SemiDormant polls before going Dormant (3 min).
 const SEMI_QUIET_LIMIT: u32 = 6;
@@ -64,8 +61,8 @@ struct Tracked {
 
 /// Owns poll tiers and the background re-measure pipeline.
 ///
-/// At most one measure job is in flight; a tick while one runs is skipped
-/// and retried on the next frame, so overlapping measures cannot pile up.
+/// One measure job runs at a time. A tick during a run waits for the next
+/// frame, so jobs cannot pile up.
 pub struct Poller {
     tracked: Vec<Tracked>,
     measure_tx: mpsc::Sender<Vec<Measurement>>,
@@ -172,9 +169,9 @@ impl Poller {
             };
             // Deleted: go Active so a rebuild is caught within one short
             // interval. The zeroed size is not new activity, so the old
-            // baseline is kept for the recreated tree to compare against.
-            // (Measuring a missing path is just an `exists` check, so the
-            // 3s cadence costs nothing while it stays gone.)
+            // baseline stays for the recreated tree to compare against.
+            // A missing path costs just an `exists` check, so the 3s
+            // cadence is free while it stays gone.
             if m.last_modified.is_none() {
                 t.tier = Tier::Active;
                 t.next_due = now + t.tier.interval();
@@ -306,7 +303,7 @@ mod tests {
         let now = Instant::now();
         poller.reset_at(&app, now);
         let mut app2 = app_with_targets();
-        // 6 quiet → SemiDormant, 6 more quiet → Dormant.
+        // 6 quiet for SemiDormant, 6 more quiet for Dormant.
         for _ in 0..12 {
             poller.apply(vec![measurement("proj-a", 100)], &mut app2, now);
         }

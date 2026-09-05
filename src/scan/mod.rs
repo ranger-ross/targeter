@@ -1,6 +1,6 @@
-//! Find Rust projects and measure their `target/` dirs.
-//! Discovery walks in parallel and honors ignore files, except that
-//! gitignored `target/` dirs still measure.
+//! Find Rust projects and measure their `target/` dirs. Discovery walks in
+//! parallel and honors ignore files, except gitignored `target/` dirs,
+//! which still measure.
 
 mod cache;
 mod discover;
@@ -37,8 +37,8 @@ impl TargetEntry {
     }
 }
 
-/// Resolve the scan root to an absolute path, so displayed paths and
-/// poller measurements stay absolute however the program was invoked.
+/// Resolve the scan root to an absolute path, so displayed paths and poller
+/// measurements stay absolute however the program was invoked.
 pub fn resolve_root(raw: &Path) -> PathBuf {
     std::fs::canonicalize(raw).unwrap_or_else(|_| raw.to_path_buf())
 }

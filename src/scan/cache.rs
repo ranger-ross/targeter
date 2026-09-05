@@ -4,8 +4,8 @@ use super::{TargetEntry, measure::recursive_scan_target};
 
 /// The path scanned for the unstable cargo build cache (`$CARGO_HOME/build-cache`).
 ///
-/// `CARGO_HOME` wins when set. It falls back to `$HOME/.cargo`.
-/// Returns `None` when neither variable resolves to a usable path.
+/// `CARGO_HOME` wins when set, else `$HOME/.cargo`.
+/// Returns `None` when neither resolves to a usable path.
 pub fn build_cache_path() -> Option<PathBuf> {
     if let Ok(home) = std::env::var("CARGO_HOME")
         && !home.trim().is_empty()
@@ -20,15 +20,15 @@ pub fn build_cache_path() -> Option<PathBuf> {
 
 /// Measure the unstable cargo build cache, if present.
 ///
-/// A missing directory means the cache is disabled or unused, so there is
-/// nothing to report rather than a zero-size entry.
+/// A missing dir means disabled or unused, so report nothing instead of
+/// a zero-size entry.
 #[tracing::instrument]
 pub fn build_cache_entry() -> Option<TargetEntry> {
     build_cache_path().and_then(|path| build_cache_entry_at(&path))
 }
 
-/// Measure the build cache at an explicit path. Separate helper so tests
-/// avoid the real `$CARGO_HOME`.
+/// Measure the build cache at an explicit path, so tests avoid the real
+/// `$CARGO_HOME`.
 pub fn build_cache_entry_at(path: &Path) -> Option<TargetEntry> {
     if !path.is_dir() || path.is_symlink() {
         return None;

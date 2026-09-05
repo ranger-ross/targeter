@@ -20,7 +20,7 @@ pub struct Measurement {
     pub last_modified: Option<SystemTime>,
 }
 
-/// Re-measure one known directory. Uses the same math as the full scan for one path.
+/// Re-measure one known directory with the full scan math for one path.
 #[tracing::instrument(skip_all, fields(target = %target_dir.display()))]
 pub fn measure_target(target_dir: &Path) -> Measurement {
     let (size, last_modified) = recursive_scan_target(target_dir);
@@ -31,12 +31,12 @@ pub fn measure_target(target_dir: &Path) -> Measurement {
     }
 }
 
-/// Recursively measure disk usage and track the newest mtime in one parallel walk.
+/// Recursively measure disk usage and newest mtime in one parallel walk.
 ///
 /// Size matches `du`: allocated-block sizes, each inode counted once. Missing
-/// paths measure as empty with no timestamp. Unreadable subtrees add nothing.
-/// Symlinks contribute their own inode blocks but are never followed, so
-/// linked trees cannot loop or double-count.
+/// paths measure empty with no timestamp, unreadable subtrees add nothing.
+/// Symlinks count their own inode blocks but are never followed, so linked
+/// trees cannot loop or double-count.
 #[tracing::instrument(skip_all, fields(path = %path.as_ref().display()))]
 pub(super) fn recursive_scan_target<T: AsRef<Path>>(path: T) -> (u64, Option<SystemTime>) {
     let path = path.as_ref();
@@ -44,12 +44,12 @@ pub(super) fn recursive_scan_target<T: AsRef<Path>>(path: T) -> (u64, Option<Sys
         return (0, None);
     }
     // Serial walk with an inline fold: no channel, no extra threads. Targets
-    // already measure in parallel (discover.rs), so per-target pools would
-    // only multiply threads and buffer whole file lists in memory.
+    // already measure in parallel, so per-target pools would only multiply
+    // threads and buffer whole file lists in memory.
     #[cfg(unix)]
     let mut seen = HashSet::new();
     let mut total = 0u64;
-    // Floor at the dir's own mtime so an existing-but-empty dir still
+    // Floor at the dir's own mtime, so an existing-but-empty dir still
     // reports a real timestamp instead of the epoch.
     let mut newest = std::fs::symlink_metadata(path)
         .and_then(|md| md.modified())
@@ -124,7 +124,7 @@ mod tests {
 
         let (alone, _) = recursive_scan_target(&target);
         assert!(alone > 0);
-        // Second link to the same inode: `du` counts nothing extra.
+        // Second link to the same inode, which `du` counts as nothing extra.
         fs::hard_link(target.join("a.bin"), target.join("a-link.bin")).unwrap();
         let (deduped, mtime) = recursive_scan_target(&target);
         assert_eq!(deduped, alone);
@@ -167,8 +167,8 @@ mod tests {
         fs::create_dir_all(&deep).unwrap();
         fs::write(deep.join("a.bin"), "1234").unwrap();
         fs::write(deep.join("b.bin"), "12345678").unwrap();
-        // Exact inode mtime, not wall clock: fs timestamps can skew
-        // sub-ms against `SystemTime::now` on tmpfs.
+        // Pin to the inode mtime. Tmpfs timestamps can skew sub-ms
+        // against wall clock.
         let expected = fs::symlink_metadata(deep.join("b.bin"))
             .unwrap()
             .modified()

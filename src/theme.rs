@@ -1,15 +1,14 @@
 //! omp-inspired widget chrome: gray cards with light gray borders.
 //!
-//! Values lifted from omp's dark theme: card fill `#161a1f`
-//! (`toolSuccessBg`), pending fill `#1d2129` (`toolPendingBg`), light gray
-//! borders `#777d88` (`muted`), selection fill `#31363f` (`selectedBg`).
+//! Values from omp's dark theme: card fill `#161a1f` (`toolSuccessBg`),
+//! borders `#777d88` (`muted`), selection `#31363f` (`selectedBg`).
 
 use ratatui::{
     style::{Color, Modifier, Style},
     text::{Line, Span},
     widgets::{Block, BorderType, Borders},
 };
-/// Card fill, stable across loading and settled states.
+/// Card fill.
 pub const CARD_BG: Color = Color::Rgb(0x16, 0x1a, 0x1f);
 /// Light gray card borders.
 pub const BORDER: Color = Color::Rgb(0x77, 0x7d, 0x88);

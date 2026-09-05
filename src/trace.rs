@@ -11,16 +11,14 @@ pub const DEFAULT_PATH: &str = "targeter-trace.json";
 /// Held for the program lifetime. Dropping it flushes the trace file.
 pub struct TraceGuard {
     _guard: tracing_chrome::FlushGuard,
-    /// Where the trace was written.
     pub path: PathBuf,
 }
 
 /// Enable Chrome-trace output for https://ui.perfetto.dev when requested.
 ///
-/// Enabled when `TARGETER_TRACING` is set to a truthy value (`1`, `true`,
-/// `yes`, `on`) or to a custom output path (any other value ending in
-/// `.json` or containing a path separator). `0`, `false`, `no`, `off`, and
-/// empty/unset disable tracing and return `None`.
+/// Set `TARGETER_TRACING` to `1`, `true`, `yes`, `on`, or a custom path
+/// (anything else ending in `.json` or holding a separator). `0`,
+/// `false`, `no`, `off`, and empty/unset disable tracing (`None`).
 pub fn init() -> Option<TraceGuard> {
     let raw = std::env::var(ENV_VAR).ok()?;
     let value = raw.trim();

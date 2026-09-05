@@ -10,15 +10,12 @@ use super::{TargetEntry, measure::recursive_scan_target};
 
 /// Scan `root` recursively for cargo projects with a `target/` dir.
 ///
-/// A directory is a project when it holds both `Cargo.toml` and a real
-/// `target/` subdirectory. `.git` and `.cargo` are never descended into, and
-/// neither is a project's own `target/`. Everything else honors ignore
-/// files (`.ignore`, `.gitignore`, ...), so ignored subtrees are pruned
-/// without a single `stat`.
-///
-/// `target/` itself stays visible through direct filesystem probes: it is
-/// usually gitignored, but a project is still reported and measured when its
-/// `target/` exists on disk.
+/// A project holds both `Cargo.toml` and a real `target/` subdir. `.git`
+/// and `.cargo` never descend, nor does a project's own `target/`.
+/// Everything else honors ignore files, so ignored subtrees prune without
+/// a single `stat`. `target/` itself stays visible through direct probes:
+/// usually gitignored, but a project still reports when its `target/`
+/// exists on disk.
 #[tracing::instrument(skip_all, fields(root = %root.display()))]
 pub fn scan(root: &Path) -> Vec<TargetEntry> {
     let projects = Mutex::new(Vec::new());
@@ -37,9 +34,8 @@ pub fn scan(root: &Path) -> Vec<TargetEntry> {
     let projects = projects.into_inner().unwrap_or_default();
     tracing::info!(count = projects.len(), "discovery complete");
 
-    // Each target measures on the shared rayon pool. Nested inside pdu's own
-    // parallel walk this just feeds one work queue, so the 1621ms outlier
-    // can't stall the other 100.
+    // Targets share one rayon pool. Nested in the parallel walk this feeds
+    // a single work queue, so a slow target cannot stall the rest.
     let mut entries: Vec<TargetEntry> = projects
         .par_iter()
         .map(|project_path| {
@@ -52,7 +48,7 @@ pub fn scan(root: &Path) -> Vec<TargetEntry> {
         })
         .collect();
 
-    // Biggest offenders first: most useful for a disk monitor.
+    // Biggest first, most useful for a disk monitor.
     entries.sort_by_key(|a| std::cmp::Reverse(a.size));
     entries
 }
