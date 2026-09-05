@@ -30,6 +30,56 @@ impl TargetEntry {
             .into_owned()
     }
 }
+/// Scan `root` recursively for cargo projects with a `target/` dir.
+///
+/// Mirrors `cargo-clean-all` detection logic:
+/// - a directory containing `Cargo.toml` is a project
+/// - if that directory also contains a `target/` subdirectory it is reported
+/// - `.git` and `.cargo` are never descended into
+/// - `target/` itself is never descended into for further project detection
+pub fn scan(root: &Path) -> Vec<TargetEntry> {
+    let num_threads = num_cpus::get().max(1);
+    let projects: Vec<PathBuf> = thread::scope(|scope| {
+        let (job_tx, job_rx) = crossbeam_channel::unbounded::<Job>();
+        let (result_tx, result_rx) = crossbeam_channel::unbounded::<PathBuf>();
+
+        for _ in 0..num_threads {
+            let job_rx = job_rx.clone();
+            let result_tx = result_tx.clone();
+            scope.spawn(move || {
+                for job in job_rx {
+                    find_projects_task(job, &result_tx);
+                }
+            });
+        }
+
+        job_tx
+            .send(Job::new(root.to_path_buf(), job_tx.clone()))
+            .expect("scan channel alive");
+        // Dropping our copy lets the receiver iterator terminate once
+        // workers drain the queue. Workers hold the remaining senders.
+        drop(job_tx);
+        drop(result_tx);
+
+        result_rx.into_iter().collect()
+    });
+
+    let mut entries: Vec<TargetEntry> = projects
+        .iter()
+        .map(|project_path| {
+            let (size, last_modified) = recursive_scan_target(project_path.join("target"));
+            TargetEntry {
+                project_path: project_path.clone(),
+                size,
+                last_modified,
+            }
+        })
+        .collect();
+
+    // Biggest offenders first: most useful for a disk monitor.
+    entries.sort_by_key(|a| std::cmp::Reverse(a.size));
+    entries
+}
 
 /// The path scanned for the unstable cargo build cache (`$CARGO_HOME/build-cache`).
 ///
@@ -86,57 +136,6 @@ pub fn measure_target(target_dir: &Path) -> Measurement {
         size,
         last_modified,
     }
-}
-
-/// Scan `root` recursively for cargo projects with a `target/` dir.
-///
-/// Mirrors `cargo-clean-all` detection logic:
-/// - a directory containing `Cargo.toml` is a project
-/// - if that directory also contains a `target/` subdirectory it is reported
-/// - `.git` and `.cargo` are never descended into
-/// - `target/` itself is never descended into for further project detection
-pub fn scan(root: &Path) -> Vec<TargetEntry> {
-    let num_threads = num_cpus::get().max(1);
-    let projects: Vec<PathBuf> = thread::scope(|scope| {
-        let (job_tx, job_rx) = crossbeam_channel::unbounded::<Job>();
-        let (result_tx, result_rx) = crossbeam_channel::unbounded::<PathBuf>();
-
-        for _ in 0..num_threads {
-            let job_rx = job_rx.clone();
-            let result_tx = result_tx.clone();
-            scope.spawn(move || {
-                for job in job_rx {
-                    find_projects_task(job, &result_tx);
-                }
-            });
-        }
-
-        job_tx
-            .send(Job::new(root.to_path_buf(), job_tx.clone()))
-            .expect("scan channel alive");
-        // Dropping our copy lets the receiver iterator terminate once
-        // workers drain the queue. Workers hold the remaining senders.
-        drop(job_tx);
-        drop(result_tx);
-
-        result_rx.into_iter().collect()
-    });
-
-    let mut entries: Vec<TargetEntry> = projects
-        .iter()
-        .map(|project_path| {
-            let (size, last_modified) = recursive_scan_target(project_path.join("target"));
-            TargetEntry {
-                project_path: project_path.clone(),
-                size,
-                last_modified,
-            }
-        })
-        .collect();
-
-    // Biggest offenders first: most useful for a disk monitor.
-    entries.sort_by_key(|a| std::cmp::Reverse(a.size));
-    entries
 }
 
 /// Work item for the scanner thread pool.
@@ -206,30 +205,6 @@ fn recursive_scan_target<T: AsRef<Path>>(path: T) -> (u64, SystemTime) {
     scan_inner(path.as_ref(), &mut seen)
 }
 
-/// Inode identity for hardlink dedup. Only Unix exposes stable ids;
-/// elsewhere every file counts (the previous behavior).
-#[cfg(unix)]
-fn inode_id(md: &std::fs::Metadata) -> Option<(u64, u64)> {
-    Some((md.dev(), md.ino()))
-}
-
-#[cfg(not(unix))]
-fn inode_id(_md: &std::fs::Metadata) -> Option<(u64, u64)> {
-    None
-}
-
-/// Allocated bytes, like `du`. Falls back to apparent length where block
-/// counts are unavailable.
-#[cfg(unix)]
-fn disk_usage(md: &std::fs::Metadata) -> u64 {
-    md.blocks() * 512
-}
-
-#[cfg(not(unix))]
-fn disk_usage(md: &std::fs::Metadata) -> u64 {
-    md.len()
-}
-
 fn scan_inner(path: &Path, seen: &mut HashSet<(u64, u64)>) -> (u64, SystemTime) {
     let default = (0, SystemTime::UNIX_EPOCH);
 
@@ -265,6 +240,30 @@ fn scan_inner(path: &Path, seen: &mut HashSet<(u64, u64)>) -> (u64, SystemTime) 
         }
     }
     (total, latest)
+}
+
+/// Inode identity for hardlink dedup. Only Unix exposes stable ids;
+/// elsewhere every file counts (the previous behavior).
+#[cfg(unix)]
+fn inode_id(md: &std::fs::Metadata) -> Option<(u64, u64)> {
+    Some((md.dev(), md.ino()))
+}
+
+#[cfg(not(unix))]
+fn inode_id(_md: &std::fs::Metadata) -> Option<(u64, u64)> {
+    None
+}
+
+/// Allocated bytes, like `du`. Falls back to apparent length where block
+/// counts are unavailable.
+#[cfg(unix)]
+fn disk_usage(md: &std::fs::Metadata) -> u64 {
+    md.blocks() * 512
+}
+
+#[cfg(not(unix))]
+fn disk_usage(md: &std::fs::Metadata) -> u64 {
+    md.len()
 }
 
 #[cfg(test)]

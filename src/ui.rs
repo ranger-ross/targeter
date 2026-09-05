@@ -10,45 +10,6 @@ use ratatui::{
 
 use crate::app::App;
 
-/// Binary-unit sizes matching `du -h` at a glance (MiB, GiB...).
-/// `bytefmt::format` is decimal SI, which reads differently for the same bytes.
-fn format_size(bytes: u64) -> String {
-    const KIB: u64 = 1024;
-    const MIB: u64 = 1024 * KIB;
-    const GIB: u64 = 1024 * MIB;
-    const TIB: u64 = 1024 * GIB;
-    if bytes < KIB {
-        format_to(bytes, Unit::B)
-    } else if bytes < MIB {
-        format_to(bytes, Unit::KIB)
-    } else if bytes < GIB {
-        format_to(bytes, Unit::MIB)
-    } else if bytes < TIB {
-        format_to(bytes, Unit::GIB)
-    } else {
-        format_to(bytes, Unit::TIB)
-    }
-}
-
-/// Canonicalize for display, falling back to the raw path on error.
-fn display_path(app: &App, path: &std::path::Path) -> String {
-    let base = std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
-    // Strip the scan root prefix so deep trees stay readable.
-    if let Ok(root) = std::fs::canonicalize(&app.root)
-        && let Ok(rel) = base.strip_prefix(&root).map(|p| p.to_path_buf())
-        && !rel.as_os_str().is_empty()
-    {
-        return format!("./{}", rel.display());
-    }
-    base.display().to_string()
-}
-
-fn format_modified(last_modified: std::time::SystemTime) -> String {
-    let dt: DateTime<Local> = last_modified.into();
-    // Same format as `cargo-clean-all`.
-    dt.format("%Y-%m-%d %H:%M").to_string()
-}
-
 pub fn render(frame: &mut Frame, app: &mut App) {
     let area = frame.area();
     let [header_area, cache_area, table_area, footer_area] = Layout::vertical([
@@ -149,6 +110,45 @@ pub fn render(frame: &mut Frame, app: &mut App) {
     }
 
     render_footer(frame, footer_area, app);
+}
+
+/// Binary-unit sizes matching `du -h` at a glance (MiB, GiB...).
+/// `bytefmt::format` is decimal SI, which reads differently for the same bytes.
+fn format_size(bytes: u64) -> String {
+    const KIB: u64 = 1024;
+    const MIB: u64 = 1024 * KIB;
+    const GIB: u64 = 1024 * MIB;
+    const TIB: u64 = 1024 * GIB;
+    if bytes < KIB {
+        format_to(bytes, Unit::B)
+    } else if bytes < MIB {
+        format_to(bytes, Unit::KIB)
+    } else if bytes < GIB {
+        format_to(bytes, Unit::MIB)
+    } else if bytes < TIB {
+        format_to(bytes, Unit::GIB)
+    } else {
+        format_to(bytes, Unit::TIB)
+    }
+}
+
+/// Canonicalize for display, falling back to the raw path on error.
+fn display_path(app: &App, path: &std::path::Path) -> String {
+    let base = std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
+    // Strip the scan root prefix so deep trees stay readable.
+    if let Ok(root) = std::fs::canonicalize(&app.root)
+        && let Ok(rel) = base.strip_prefix(&root).map(|p| p.to_path_buf())
+        && !rel.as_os_str().is_empty()
+    {
+        return format!("./{}", rel.display());
+    }
+    base.display().to_string()
+}
+
+fn format_modified(last_modified: std::time::SystemTime) -> String {
+    let dt: DateTime<Local> = last_modified.into();
+    // Same format as `cargo-clean-all`.
+    dt.format("%Y-%m-%d %H:%M").to_string()
 }
 
 /// Pinned row for the unstable cargo build cache. It lives outside the scan

@@ -14,31 +14,6 @@ use crate::scan::{Measurement, TargetEntry, build_cache_path};
 /// during a build triggers one re-measure instead of one per file.
 const MEASURE_DEBOUNCE: Duration = Duration::from_millis(500);
 
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub enum SortKey {
-    #[default]
-    Size,
-    Modified,
-    Name,
-}
-
-impl SortKey {
-    pub fn next(self) -> Self {
-        match self {
-            Self::Size => Self::Modified,
-            Self::Modified => Self::Name,
-            Self::Name => Self::Size,
-        }
-    }
-
-    pub fn label(self) -> &'static str {
-        match self {
-            Self::Size => "size",
-            Self::Modified => "modified",
-            Self::Name => "name",
-        }
-    }
-}
 pub struct App {
     pub root: PathBuf,
     pub entries: Vec<TargetEntry>,
@@ -165,13 +140,6 @@ impl App {
                 })
                 .map(|(i, _)| i)
                 .collect(),
-        }
-    }
-    fn sort_entries(&self, entries: &mut [TargetEntry]) {
-        match self.sort {
-            SortKey::Size => entries.sort_by_key(|a| std::cmp::Reverse(a.size)),
-            SortKey::Modified => entries.sort_by_key(|a| std::cmp::Reverse(a.last_modified)),
-            SortKey::Name => entries.sort_by(|a, b| a.project_path.cmp(&b.project_path)),
         }
     }
 
@@ -332,6 +300,40 @@ impl App {
         let visible = self.visible_indices().len();
         if visible > 0 {
             self.table_state.select(Some(visible - 1));
+        }
+    }
+
+    fn sort_entries(&self, entries: &mut [TargetEntry]) {
+        match self.sort {
+            SortKey::Size => entries.sort_by_key(|a| std::cmp::Reverse(a.size)),
+            SortKey::Modified => entries.sort_by_key(|a| std::cmp::Reverse(a.last_modified)),
+            SortKey::Name => entries.sort_by(|a, b| a.project_path.cmp(&b.project_path)),
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum SortKey {
+    #[default]
+    Size,
+    Modified,
+    Name,
+}
+
+impl SortKey {
+    pub fn next(self) -> Self {
+        match self {
+            Self::Size => Self::Modified,
+            Self::Modified => Self::Name,
+            Self::Name => Self::Size,
+        }
+    }
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Size => "size",
+            Self::Modified => "modified",
+            Self::Name => "name",
         }
     }
 }
