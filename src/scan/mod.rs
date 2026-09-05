@@ -1,4 +1,6 @@
 //! Find Rust projects and measure their `target/` dirs.
+//! Discovery walks in parallel and honors ignore files, except that
+//! gitignored `target/` dirs still measure.
 
 mod cache;
 mod discover;

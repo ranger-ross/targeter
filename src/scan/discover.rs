@@ -1,46 +1,40 @@
 use std::{
     path::{Path, PathBuf},
-    thread,
+    sync::Mutex,
 };
 
-use crossbeam_channel::Sender;
+use ignore::{DirEntry, WalkBuilder, WalkState};
 
 use super::{TargetEntry, measure::recursive_scan_target};
 
 /// Scan `root` recursively for cargo projects with a `target/` dir.
 ///
-/// Mirrors `cargo-clean-all` detection logic:
-/// - a directory containing `Cargo.toml` is a project
-/// - if that directory also contains a `target/` subdirectory it is reported
-/// - `.git` and `.cargo` are never descended into
-/// - `target/` itself is never descended into for further project detection
+/// A directory is a project when it holds both `Cargo.toml` and a real
+/// `target/` subdirectory. `.git` and `.cargo` are never descended into, and
+/// neither is a project's own `target/`. Everything else honors ignore
+/// files (`.ignore`, `.gitignore`, ...), so ignored subtrees are pruned
+/// without a single `stat`.
+///
+/// `target/` itself stays visible through direct filesystem probes: it is
+/// usually gitignored, but a project is still reported and measured when its
+/// `target/` exists on disk.
 #[tracing::instrument(skip_all, fields(root = %root.display()))]
 pub fn scan(root: &Path) -> Vec<TargetEntry> {
-    let num_threads = num_cpus::get().max(1);
-    let projects: Vec<PathBuf> = thread::scope(|scope| {
-        let (job_tx, job_rx) = crossbeam_channel::unbounded::<Job>();
-        let (result_tx, result_rx) = crossbeam_channel::unbounded::<PathBuf>();
-
-        for _ in 0..num_threads {
-            let job_rx = job_rx.clone();
-            let result_tx = result_tx.clone();
-            scope.spawn(move || {
-                for job in job_rx {
-                    find_projects_task(job, &result_tx);
-                }
-            });
-        }
-
-        job_tx
-            .send(Job::new(root.to_path_buf(), job_tx.clone()))
-            .expect("scan channel alive");
-        // Dropping our copy lets the receiver iterator terminate once
-        // workers drain the queue. Workers hold the remaining senders.
-        drop(job_tx);
-        drop(result_tx);
-
-        result_rx.into_iter().collect()
-    });
+    let projects = Mutex::new(Vec::new());
+    WalkBuilder::new(root)
+        // Hidden dirs may hold projects; `.git` and `.cargo` are pruned below.
+        .hidden(false)
+        // Apply gitignores even outside a git checkout.
+        .require_git(false)
+        .threads(num_cpus::get().max(1))
+        .filter_entry(keep_entry)
+        .build_parallel()
+        .run(|| {
+            let projects = &projects;
+            Box::new(move |result: Result<DirEntry, ignore::Error>| visit_entry(result, projects))
+        });
+    let projects = projects.into_inner().unwrap_or_default();
+    tracing::info!(count = projects.len(), "discovery complete");
 
     let mut entries: Vec<TargetEntry> = projects
         .iter()
@@ -59,58 +53,55 @@ pub fn scan(root: &Path) -> Vec<TargetEntry> {
     entries
 }
 
-/// Work item for the scanner thread pool.
-struct Job {
-    path: PathBuf,
-    sender: Sender<Job>,
+/// Whether the walker yields an entry and descends into it.
+/// Rejecting a directory prunes its whole subtree.
+fn keep_entry(entry: &DirEntry) -> bool {
+    // Never prune the scan root itself.
+    if entry.depth() == 0 {
+        return true;
+    }
+    match entry.file_name().to_str() {
+        Some(".git") | Some(".cargo") => false,
+        // A bare `target/` without a sibling `Cargo.toml` may hide nested
+        // workspaces, so only a project's own `target/` is pruned.
+        Some("target") => !is_project_target(entry.path()),
+        _ => true,
+    }
 }
 
-impl Job {
-    fn new(path: PathBuf, sender: Sender<Job>) -> Self {
-        Self { path, sender }
-    }
-
-    fn explore_recursive(&self, path: PathBuf) {
-        // Receiver may be gone during shutdown; a failed send just drops the job.
-        let _ = self.sender.send(Job::new(path, self.sender.clone()));
-    }
+/// Whether `dir` is a `target/` with a sibling `Cargo.toml`.
+fn is_project_target(dir: &Path) -> bool {
+    dir.parent()
+        .map(|parent| parent.join("Cargo.toml").is_file())
+        .unwrap_or(false)
 }
 
-/// Check one directory. Report it if it is a project with a `target/`.
-/// Otherwise queue subdirectories for scanning.
-fn find_projects_task(job: Job, results: &Sender<PathBuf>) {
-    let read_dir = match job.path.read_dir() {
-        Ok(it) => it,
-        Err(_) => return,
+/// Record `entry` when it is a project dir. Never blocks the walk.
+fn visit_entry(
+    result: Result<DirEntry, ignore::Error>,
+    projects: &Mutex<Vec<PathBuf>>,
+) -> WalkState {
+    let Ok(entry) = result else {
+        return WalkState::Continue;
     };
-
-    // Only `DirEntry`s that read cleanly reach the partition. Unreadable entries
-    // are skipped, matching `cargo-clean-all`.
-    let (dirs, files): (Vec<_>, Vec<_>) = read_dir
-        .filter_map(|it| it.ok())
-        .partition(|it| it.file_type().is_ok_and(|t| t.is_dir()));
-
-    let has_cargo_toml = files
-        .iter()
-        .any(|it| it.file_name().to_string_lossy() == "Cargo.toml");
-
-    let mut has_target = false;
-    for dir in &dirs {
-        let file_name = dir.file_name().to_string_lossy().into_owned();
-        match file_name.as_str() {
-            // Never descend here. Same exclusion as `cargo-clean-all`.
-            ".git" | ".cargo" => {}
-            // Do not recurse into `target/`. Just record it on projects.
-            "target" if has_cargo_toml => has_target = true,
-            // A bare `target/` without `Cargo.toml` beside it is not a project dir.
-            // Still recurse to find nested workspaces.
-            _ => job.explore_recursive(dir.path()),
-        }
+    // Symlinked dirs are never projects, and the walker never descends into them.
+    if entry.path_is_symlink() || !entry.file_type().is_some_and(|kind| kind.is_dir()) {
+        return WalkState::Continue;
     }
-
-    if has_cargo_toml && has_target {
-        let _ = results.send(job.path);
+    let dir = entry.path();
+    if dir.join("Cargo.toml").is_file()
+        && is_target_dir(&dir.join("target"))
+        && let Ok(mut projects) = projects.lock()
+    {
+        projects.push(dir.to_path_buf());
     }
+    WalkState::Continue
+}
+
+/// Whether `path` is a real `target/` dir. Probed directly so gitignored
+/// build output still measures. Symlinks never count.
+fn is_target_dir(path: &Path) -> bool {
+    std::fs::symlink_metadata(path).is_ok_and(|md| md.is_dir())
 }
 
 #[cfg(test)]
@@ -169,6 +160,28 @@ mod tests {
                 .unwrap_or(Duration::MAX)
                 < Duration::from_secs(3600)
         );
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn gitignored_dirs_are_skipped_but_gitignored_targets_still_measure() {
+        let root = std::env::temp_dir().join("targeter-test-gitignore");
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).unwrap();
+        fs::write(root.join(".gitignore"), "ignored/\ntarget/\n").unwrap();
+        // Real project whose `target/` matches the ignore file.
+        fs::create_dir_all(root.join("proj-b/target")).unwrap();
+        fs::write(root.join("proj-b/Cargo.toml"), "[package]\n").unwrap();
+        fs::write(root.join("proj-b/target/blob.bin"), "hello").unwrap();
+        // Fake project under a dir the ignore file prunes. Never even walked.
+        fs::create_dir_all(root.join("ignored/ghost/target")).unwrap();
+        fs::write(root.join("ignored/ghost/Cargo.toml"), "[package]\n").unwrap();
+        fs::write(root.join("ignored/ghost/target/blob.bin"), "hello").unwrap();
+
+        let entries = scan(&root);
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].project_path, root.join("proj-b"));
+        assert!(entries[0].size >= 5);
         let _ = fs::remove_dir_all(&root);
     }
 }
