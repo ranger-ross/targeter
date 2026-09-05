@@ -1,4 +1,7 @@
-use std::{path::PathBuf, time::{Duration, Instant}};
+use std::{
+    path::PathBuf,
+    time::{Duration, Instant},
+};
 
 use ratatui::widgets::TableState;
 use regex::Regex;
@@ -24,6 +27,8 @@ pub struct App {
     pub filter_regex: Option<Regex>,
     /// First line of the latest regex error, if the text does not compile.
     pub filter_error: Option<String>,
+    /// Last delete failure, cleared on the next successful delete.
+    pub delete_error: Option<String>,
 }
 
 impl App {
@@ -49,6 +54,7 @@ impl App {
             filter_text: String::new(),
             filter_regex: None,
             filter_error: None,
+            delete_error: None,
         }
     }
 
@@ -237,6 +243,60 @@ impl App {
         if visible > 0 {
             self.table_state.select(Some(visible - 1));
         }
+    }
+    /// Delete the selected project's `target/` dir. A missing dir
+    /// counts as deleted. Failures surface in `delete_error`.
+    /// Selection moves to the row above, or below if the first
+    /// row was deleted. A lone row keeps selection.
+    pub fn delete_selected(&mut self) {
+        self.navigated = true;
+        let visible = self.visible_indices();
+        let sel = self.table_state.selected();
+        let entry_idx = sel.and_then(|i| visible.get(i).copied());
+        let Some(entry_idx) = entry_idx else { return };
+        let Some(project_path) = self.entries.get(entry_idx).map(|e| e.project_path.clone()) else {
+            return;
+        };
+        // Neighbor by identity, so the resort below cannot lose it.
+        let neighbor_idx = match sel {
+            Some(0) => visible.get(1).copied(),
+            Some(i) => visible.get(i - 1).copied(),
+            None => None,
+        };
+        let neighbor =
+            neighbor_idx.and_then(|i| self.entries.get(i).map(|e| e.project_path.clone()));
+        let target = project_path.join("target");
+        match std::fs::remove_dir_all(&target) {
+            Ok(()) => self.delete_error = None,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => self.delete_error = None,
+            Err(e) => {
+                self.delete_error = Some(format!("delete {}: {e}", target.display()));
+                return;
+            }
+        }
+        if let Some(entry) = self
+            .entries
+            .iter_mut()
+            .find(|e| e.project_path == project_path)
+        {
+            entry.size = Some(0);
+            entry.last_modified = None;
+        }
+        self.total_size = self.entries.iter().filter_map(|e| e.size).sum();
+        let mut entries = std::mem::take(&mut self.entries);
+        self.sort_entries(&mut entries);
+        self.entries = entries;
+        if neighbor.is_none() {
+            return;
+        }
+        let visible = self.visible_indices();
+        let pos = visible.iter().position(|&i| {
+            self.entries
+                .get(i)
+                .is_some_and(|e| Some(&e.project_path) == neighbor.as_ref())
+        });
+        self.table_state
+            .select(pos.or_else(|| visible.first().map(|_| 0)));
     }
 
     /// Select the first row without counting as user navigation, so the
@@ -542,5 +602,76 @@ mod tests {
         assert_eq!(app.table_state.selected(), Some(0));
         app.previous();
         assert_eq!(app.table_state.selected(), Some(0));
+    }
+
+    #[test]
+    fn delete_selected_removes_target_and_zeroes_row() {
+        let root = std::env::temp_dir().join("targeter-test-delete");
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(root.join("proj/target")).unwrap();
+        std::fs::write(root.join("proj/target/a.bin"), "1234").unwrap();
+        let mut app = App::new(root.clone());
+        app.set_discovered(vec![root.join("proj")]);
+        app.apply_measurements(&[Measurement {
+            target_dir: root.join("proj/target"),
+            size: 4,
+            last_modified: Some(SystemTime::UNIX_EPOCH),
+        }]);
+        app.finish_scan(None);
+        app.loading_start = Instant::now() - Duration::from_secs(3600);
+        app.delete_selected();
+        assert!(!root.join("proj/target").exists());
+        assert_eq!(app.entries[0].size, Some(0));
+        assert_eq!(app.entries[0].last_modified, None);
+        assert_eq!(app.total_size, 0);
+        assert!(app.delete_error.is_none());
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn delete_selected_follows_filtered_selection() {
+        let root = std::env::temp_dir().join("targeter-test-delete-filter");
+        let _ = std::fs::remove_dir_all(&root);
+        for proj in ["proj-a", "proj-b"] {
+            std::fs::create_dir_all(root.join(proj).join("target")).unwrap();
+            std::fs::write(root.join(proj).join("target/a.bin"), "1234").unwrap();
+        }
+        let mut app = App::new(root.clone());
+        app.set_discovered(vec![root.join("proj-a"), root.join("proj-b")]);
+        app.finish_scan(None);
+        app.loading_start = Instant::now() - Duration::from_secs(3600);
+        app.set_filter("proj-b".to_string());
+        assert_eq!(app.visible_indices().len(), 1);
+        app.delete_selected();
+        assert!(!root.join("proj-b/target").exists());
+        assert!(root.join("proj-a/target").exists());
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn delete_selected_moves_to_neighbor_row() {
+        let selected_project = |app: &App| {
+            app.table_state
+                .selected()
+                .and_then(|i| app.visible_indices().get(i).copied())
+                .and_then(|i| app.entries.get(i))
+                .map(|e| e.project_path.clone())
+                .expect("selection kept")
+        };
+        // Deleting the last row moves up. Fake paths miss on disk,
+        // which counts as deleted.
+        let mut app = app_with_entries();
+        app.table_state.select(Some(1));
+        app.delete_selected();
+        assert_eq!(selected_project(&app), PathBuf::from("proj-big"));
+        // Deleting the first row moves down.
+        app.table_state.select(Some(0));
+        app.delete_selected();
+        assert_eq!(selected_project(&app), PathBuf::from("proj-small"));
+        // A lone row keeps selection.
+        let mut solo = App::new(PathBuf::from("."));
+        solo.set_discovered(vec![PathBuf::from("only")]);
+        solo.delete_selected();
+        assert_eq!(solo.table_state.selected(), Some(0));
     }
 }

@@ -234,7 +234,7 @@ fn render_footer(frame: &mut Frame, area: Rect, app: &App) {
         frame.render_widget(
             Paragraph::new(Line::from(vec![
                 Span::raw(line),
-                Span::raw(" · enter done · esc done · ^U clear"),
+                Span::raw(" · enter done · esc clear · ^U clear"),
             ]))
             .block(crate::ui::theme::card("filter (regex)")),
             area,
@@ -249,14 +249,19 @@ fn render_footer(frame: &mut Frame, area: Rect, app: &App) {
     let filter = if app.filter_text.is_empty() {
         String::new()
     } else {
-        format!(" · filter: /{}/", app.filter_text)
+        format!(" · filter: /{}/ · esc clears", app.filter_text)
+    };
+    let delete = match &app.delete_error {
+        Some(err) => format!(" · delete failed: {err}"),
+        None => String::new(),
     };
     frame.render_widget(
         Paragraph::new(Line::from(vec![
             Span::raw("↑/↓ navigate · g/G top/bottom · s "),
             Span::raw(status),
-            Span::raw(" · / filter · r rescan · q quit"),
+            Span::raw(" · / filter · r rescan · d delete · q quit"),
             Span::raw(filter),
+            Span::raw(delete),
         ]))
         .block(crate::ui::theme::card_plain()),
         area,
