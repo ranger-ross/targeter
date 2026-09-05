@@ -40,7 +40,10 @@ pub fn init() -> Option<TraceGuard> {
     // try_init so tests embedding instrumented code never panic.
     let _ = tracing_subscriber::registry().with(layer).try_init();
     eprintln!("TARGETER_TRACING: writing trace to {}", path.display());
-    Some(TraceGuard { _guard: guard, path })
+    Some(TraceGuard {
+        _guard: guard,
+        path,
+    })
 }
 
 fn is_truthy(value: &str) -> bool {

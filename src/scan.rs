@@ -1,14 +1,24 @@
 use std::{
-    collections::HashSet,
     path::{Path, PathBuf},
     thread,
     time::SystemTime,
 };
 
 use crossbeam_channel::Sender;
+use parallel_disk_usage::{
+    data_tree::DataTree,
+    device::DeviceBoundary,
+    fs_tree_builder::FsTreeBuilder,
+    hardlink::DeduplicateSharedSize,
+    os_string_display::OsStringDisplay,
+    reporter::{ErrorOnlyReporter, ErrorReport},
+    size::Bytes,
+};
 
+#[cfg(not(unix))]
+use parallel_disk_usage::{get_size::GetApparentSize, hardlink::HardlinkIgnorant};
 #[cfg(unix)]
-use std::os::unix::fs::MetadataExt;
+use parallel_disk_usage::{get_size::GetBlockSize, hardlink::HardlinkAware};
 
 /// A Rust project with a `target/` directory on disk.
 #[derive(Clone, Debug)]
@@ -197,19 +207,59 @@ fn find_projects_task(job: Job, results: &Sender<PathBuf>) {
 
 /// Recursively measure disk usage and track the newest mtime.
 ///
-/// Matches `du`. Each inode counts once, so hardlinked artifacts in `target/`
-/// do not inflate the total. Sizes use allocated blocks, so sparse files count
-/// occupied space. Missing paths and symlinks count as empty. Unreadable
+/// Size matches `du`: parallel walk with allocated-block sizes, each inode
+/// counted once. Missing paths and symlinks count as empty. Unreadable
 /// subtrees add nothing.
 #[tracing::instrument(skip_all, fields(path = %path.as_ref().display()))]
 fn recursive_scan_target<T: AsRef<Path>>(path: T) -> (u64, SystemTime) {
-    let mut seen = HashSet::new();
-    scan_inner(path.as_ref(), &mut seen)
+    let path = path.as_ref();
+    if !path.exists() || path.is_symlink() {
+        return (0, SystemTime::UNIX_EPOCH);
+    }
+    (dir_size(path), newest_mtime(path))
 }
 
-fn scan_inner(path: &Path, seen: &mut HashSet<(u64, u64)>) -> (u64, SystemTime) {
-    let default = (0, SystemTime::UNIX_EPOCH);
+/// Disk usage of one directory tree via `parallel-disk-usage`.
+#[cfg(unix)]
+fn dir_size(path: &Path) -> u64 {
+    let reporter = ErrorOnlyReporter::new(ErrorReport::SILENT);
+    let recorder = HardlinkAware::new();
+    let mut tree: DataTree<OsStringDisplay, Bytes> = FsTreeBuilder {
+        root: path.to_path_buf(),
+        size_getter: GetBlockSize,
+        hardlinks_recorder: &recorder,
+        reporter: &reporter,
+        device_boundary: DeviceBoundary::Cross,
+        max_depth: u64::MAX,
+    }
+    .into();
+    // Count the first link of each inode only, like `du`.
+    let _ = recorder.deduplicate(&mut tree);
+    tree.size().into()
+}
 
+/// Allocated-block sizes are POSIX-only. Elsewhere fall back to apparent length.
+#[cfg(not(unix))]
+fn dir_size(path: &Path) -> u64 {
+    let reporter = ErrorOnlyReporter::new(ErrorReport::SILENT);
+    let recorder = HardlinkIgnorant;
+    let mut tree: DataTree<OsStringDisplay, Bytes> = FsTreeBuilder {
+        root: path.to_path_buf(),
+        size_getter: GetApparentSize,
+        hardlinks_recorder: &recorder,
+        reporter: &reporter,
+        device_boundary: DeviceBoundary::Cross,
+        max_depth: u64::MAX,
+    }
+    .into();
+    let _ = recorder.deduplicate(&mut tree);
+    tree.size().into()
+}
+
+/// Newest mtime under a directory. Missing paths and symlinks count as
+/// epoch. Unreadable subtrees add nothing.
+fn newest_mtime(path: &Path) -> SystemTime {
+    let default = SystemTime::UNIX_EPOCH;
     if !path.exists() || path.is_symlink() {
         return default;
     }
@@ -217,54 +267,17 @@ fn scan_inner(path: &Path, seen: &mut HashSet<(u64, u64)>) -> (u64, SystemTime) 
         Ok(md) => md,
         Err(_) => return default,
     };
-    // Second link to a counted inode: `du` counts it zero times.
-    if let Some(id) = inode_id(&md)
-        && !seen.insert(id)
-    {
-        return default;
-    }
-
-    let newest = md.modified().unwrap_or(default.1);
+    let newest = md.modified().unwrap_or(default);
     if !md.is_dir() {
-        return if md.is_file() {
-            (disk_usage(&md), newest)
-        } else {
-            default
-        };
+        return if md.is_file() { newest } else { default };
     }
-    // Directories contribute their own blocks too, like `du`.
-    let (mut total, mut latest) = (disk_usage(&md), newest);
+    let mut latest = newest;
     if let Ok(rd) = path.read_dir() {
         for child in rd.filter_map(|it| it.ok().map(|it| it.path())) {
-            let (size, mtime) = scan_inner(&child, seen);
-            total += size;
-            latest = latest.max(mtime);
+            latest = latest.max(newest_mtime(&child));
         }
     }
-    (total, latest)
-}
-
-/// Inode identity for hardlink dedup. Only Unix exposes stable ids.
-/// Elsewhere every file counts.
-#[cfg(unix)]
-fn inode_id(md: &std::fs::Metadata) -> Option<(u64, u64)> {
-    Some((md.dev(), md.ino()))
-}
-
-#[cfg(not(unix))]
-fn inode_id(_md: &std::fs::Metadata) -> Option<(u64, u64)> {
-    None
-}
-
-/// Allocated bytes, like `du`. It falls back to apparent length without block counts.
-#[cfg(unix)]
-fn disk_usage(md: &std::fs::Metadata) -> u64 {
-    md.blocks() * 512
-}
-
-#[cfg(not(unix))]
-fn disk_usage(md: &std::fs::Metadata) -> u64 {
-    md.len()
+    latest
 }
 
 #[cfg(test)]
