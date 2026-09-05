@@ -9,7 +9,12 @@ impl Args {
         let root = std::env::args()
             .nth(1)
             .map(PathBuf::from)
-            .unwrap_or_else(|| PathBuf::from("."));
+            .unwrap_or_else(|| {
+                homedir::my_home()
+                    .ok()
+                    .flatten()
+                    .unwrap_or_else(|| PathBuf::from("."))
+            });
 
         Self { root }
     }
