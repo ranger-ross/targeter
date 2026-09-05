@@ -112,8 +112,8 @@ pub fn render(frame: &mut Frame, app: &mut App) {
     render_footer(frame, footer_area, app);
 }
 
-/// Binary-unit sizes matching `du -h` at a glance (MiB, GiB...).
-/// `bytefmt::format` is decimal SI, which reads differently for the same bytes.
+/// Binary-unit sizes matching `du -h` (MiB, GiB...). Avoids `bytefmt::format`
+/// because it uses decimal SI.
 fn format_size(bytes: u64) -> String {
     const KIB: u64 = 1024;
     const MIB: u64 = 1024 * KIB;

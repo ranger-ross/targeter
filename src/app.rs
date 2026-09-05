@@ -18,8 +18,8 @@ pub struct App {
     pub root: PathBuf,
     pub entries: Vec<TargetEntry>,
     pub build_cache: Option<TargetEntry>,
-    /// Where the unstable cargo build cache lives, even when it has no
-    /// entry yet. Lets the watcher and matcher cover its arrival.
+    /// Unstable cargo build cache location. Set even with no entry yet
+    /// so the watcher covers its arrival.
     pub build_cache_path: Option<PathBuf>,
     pub total_size: u64,
     pub table_state: TableState,
@@ -29,9 +29,9 @@ pub struct App {
     pub watching: bool,
     /// True while the user is typing a filter pattern.
     pub filtering: bool,
-    /// Raw filter text. Compiled live; invalid patterns keep the last good one.
+    /// Raw filter text. Compiles live. Invalid input keeps the last good pattern.
     pub filter_text: String,
-    /// Last successfully compiled filter, matched against name and path.
+    /// Last filter that compiled. Matches against name and path.
     pub filter_regex: Option<Regex>,
     /// First line of the latest regex error, if the text does not compile.
     pub filter_error: Option<String>,
@@ -39,10 +39,10 @@ pub struct App {
     dirty: HashSet<PathBuf>,
     /// Last time dirty entries were flushed for measuring.
     last_flush: Instant,
-    /// Watched dirs that were missing when last measured. Their recursive
-    /// watches died with them, so they need re-watching on return.
+    /// Dirs missing at the last measure. Their recursive watches died with
+    /// them. Rewatch them on return.
     missing: HashSet<PathBuf>,
-    /// A missing dir came back; the watcher must be rebuilt.
+    /// A missing dir came back. Rebuild the watcher.
     rewatch_needed: bool,
 }
 
@@ -159,10 +159,9 @@ impl App {
         dirs
     }
 
-    /// Directories to hand to the filesystem watcher. Each `target/` is
-    /// watched recursively, plus its parent non-recursively: deleting a
-    /// `target/` kills its own watches, but the parent survives and reports
-    /// the recreation.
+    /// Dirs for the filesystem watcher. Each `target/` is recursive and its
+    /// parent is not. Deleting a `target/` kills its own watches. The parent
+    /// survives and reports the recreation.
     pub fn watch_dirs(&self) -> Vec<(PathBuf, RecursiveMode)> {
         let mut dirs = Vec::new();
         for entry in &self.entries {
@@ -190,8 +189,7 @@ impl App {
             .find(|dir| path.starts_with(dir))
     }
 
-    /// True when a missing dir came back and watches must be rebuilt.
-    /// Resets on read.
+    /// True if a missing dir came back and watches need a rebuild. It clears on read.
     pub fn take_rewatch_needed(&mut self) -> bool {
         std::mem::replace(&mut self.rewatch_needed, false)
     }
@@ -201,8 +199,7 @@ impl App {
         self.dirty.insert(target_dir);
     }
 
-    /// Hand over dirty dirs once the debounce has passed. Returns `None`
-    /// when there is nothing to do yet, so callers can poll this freely.
+    /// Return dirty dirs once the debounce passes. Returns `None` when there is nothing due.
     pub fn take_dirty_if_due(&mut self) -> Option<Vec<PathBuf>> {
         if self.dirty.is_empty() || self.last_flush.elapsed() < MEASURE_DEBOUNCE {
             return None;
@@ -226,8 +223,7 @@ impl App {
         for m in measurements {
             if m.target_dir.is_dir() {
                 if self.missing.remove(&m.target_dir) {
-                    // Came back after a deletion; its recursive watches died
-                    // with it, so they must be re-established.
+                    // Came back after deletion. Its recursive watches died with it. Rewatch it.
                     self.rewatch_needed = true;
                 }
             } else {
@@ -247,7 +243,7 @@ impl App {
                 cache.last_modified = m.last_modified;
             } else if Some(&m.target_dir) == self.build_cache_path.as_ref() && m.target_dir.is_dir()
             {
-                // The build cache arrived after startup; it gets a row now.
+                // The build cache arrived after startup. Give it a row now.
                 self.build_cache = Some(TargetEntry {
                     project_path: m.target_dir.clone(),
                     size: m.size,

@@ -83,7 +83,7 @@ pub fn scan(root: &Path) -> Vec<TargetEntry> {
 
 /// The path scanned for the unstable cargo build cache (`$CARGO_HOME/build-cache`).
 ///
-/// `CARGO_HOME` wins when set; otherwise `$HOME/.cargo` is used.
+/// `CARGO_HOME` wins when set. It falls back to `$HOME/.cargo`.
 /// Returns `None` when neither variable resolves to a usable path.
 pub fn build_cache_path() -> Option<PathBuf> {
     if let Ok(home) = std::env::var("CARGO_HOME")
@@ -99,14 +99,14 @@ pub fn build_cache_path() -> Option<PathBuf> {
 
 /// Measure the unstable cargo build cache, if present.
 ///
-/// Missing directory means the cache is disabled or unused, so there is
+/// A missing directory means the cache is disabled or unused, so there is
 /// nothing to report rather than a zero-size entry.
 pub fn build_cache_entry() -> Option<TargetEntry> {
     build_cache_path().and_then(|path| build_cache_entry_at(&path))
 }
 
-/// Measure the build cache at an explicit path. Split out for tests so they
-/// do not depend on the real `$CARGO_HOME`.
+/// Measure the build cache at an explicit path. Separate helper so tests
+/// avoid the real `$CARGO_HOME`.
 pub fn build_cache_entry_at(path: &Path) -> Option<TargetEntry> {
     if !path.is_dir() || path.is_symlink() {
         return None;
@@ -128,7 +128,7 @@ pub struct Measurement {
     pub last_modified: SystemTime,
 }
 
-/// Re-measure one known directory. Same math as the full scan, one path.
+/// Re-measure one known directory. Uses the same math as the full scan for one path.
 pub fn measure_target(target_dir: &Path) -> Measurement {
     let (size, last_modified) = recursive_scan_target(target_dir);
     Measurement {
@@ -155,16 +155,16 @@ impl Job {
     }
 }
 
-/// Check one directory: report it if it is a project with a `target/`,
-/// otherwise queue subdirectories for scanning.
+/// Check one directory. Report it if it is a project with a `target/`.
+/// Otherwise queue subdirectories for scanning.
 fn find_projects_task(job: Job, results: &Sender<PathBuf>) {
     let read_dir = match job.path.read_dir() {
         Ok(it) => it,
         Err(_) => return,
     };
 
-    // Partition is over `DirEntry`s that read cleanly; unreadable entries are skipped,
-    // matching `cargo-clean-all` (which hides access errors unless verbose).
+    // Only `DirEntry`s that read cleanly reach the partition. Unreadable entries
+    // are skipped, matching `cargo-clean-all`.
     let (dirs, files): (Vec<_>, Vec<_>) = read_dir
         .filter_map(|it| it.ok())
         .partition(|it| it.file_type().is_ok_and(|t| t.is_dir()));
@@ -177,12 +177,12 @@ fn find_projects_task(job: Job, results: &Sender<PathBuf>) {
     for dir in &dirs {
         let file_name = dir.file_name().to_string_lossy().into_owned();
         match file_name.as_str() {
-            // Never descend here; same exclusion as `cargo-clean-all` (see its issue #2).
+            // Never descend here. Same exclusion as `cargo-clean-all`.
             ".git" | ".cargo" => {}
-            // Don't recurse into `target/`; just record its presence on projects.
+            // Do not recurse into `target/`. Just record it on projects.
             "target" if has_cargo_toml => has_target = true,
-            // A bare `target/` without `Cargo.toml` beside it is not a project
-            // target dir; still recurse (harmless, finds nested workspaces).
+            // A bare `target/` without `Cargo.toml` beside it is not a project dir.
+            // Still recurse to find nested workspaces.
             _ => job.explore_recursive(dir.path()),
         }
     }
@@ -194,12 +194,10 @@ fn find_projects_task(job: Job, results: &Sender<PathBuf>) {
 
 /// Recursively measure disk usage and track the newest mtime.
 ///
-/// Same semantics as `du`: each inode counts once no matter how many links
-/// point at it (cargo hardlinks artifacts all over `target/`, so a naive
-/// size sum overstates real disk use), and sizes are allocated blocks rather
-/// than apparent lengths (so sparse files count what they occupy).
-/// Missing paths and symlinks count as empty/epoch; unreadable subtrees
-/// contribute nothing.
+/// Matches `du`. Each inode counts once, so hardlinked artifacts in `target/`
+/// do not inflate the total. Sizes use allocated blocks, so sparse files count
+/// occupied space. Missing paths and symlinks count as empty. Unreadable
+/// subtrees add nothing.
 fn recursive_scan_target<T: AsRef<Path>>(path: T) -> (u64, SystemTime) {
     let mut seen = HashSet::new();
     scan_inner(path.as_ref(), &mut seen)
@@ -242,8 +240,8 @@ fn scan_inner(path: &Path, seen: &mut HashSet<(u64, u64)>) -> (u64, SystemTime) 
     (total, latest)
 }
 
-/// Inode identity for hardlink dedup. Only Unix exposes stable ids;
-/// elsewhere every file counts (the previous behavior).
+/// Inode identity for hardlink dedup. Only Unix exposes stable ids.
+/// Elsewhere every file counts.
 #[cfg(unix)]
 fn inode_id(md: &std::fs::Metadata) -> Option<(u64, u64)> {
     Some((md.dev(), md.ino()))
@@ -254,8 +252,7 @@ fn inode_id(_md: &std::fs::Metadata) -> Option<(u64, u64)> {
     None
 }
 
-/// Allocated bytes, like `du`. Falls back to apparent length where block
-/// counts are unavailable.
+/// Allocated bytes, like `du`. It falls back to apparent length without block counts.
 #[cfg(unix)]
 fn disk_usage(md: &std::fs::Metadata) -> u64 {
     md.blocks() * 512

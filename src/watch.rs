@@ -132,8 +132,8 @@ pub fn rebuild_watcher(
 
 /// Resolve the scan root to an absolute path.
 ///
-/// Filesystem watchers report absolute event paths, so a relative root would
-/// silently break live updates: no event path would ever match a known dir.
+/// Filesystem watchers report absolute event paths. A relative root would break
+/// live updates because no event path would match a known dir.
 pub fn resolve_root(raw: &Path) -> PathBuf {
     std::fs::canonicalize(raw).unwrap_or_else(|_| raw.to_path_buf())
 }
