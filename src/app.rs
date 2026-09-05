@@ -165,7 +165,10 @@ impl App {
             .and_then(|i| self.entries.get(i))
             .map(|e| e.target_dir.clone());
         for m in measurements {
-            if let Some(entry) = self.entries.iter_mut().find(|e| e.target_dir == m.target_dir)
+            if let Some(entry) = self
+                .entries
+                .iter_mut()
+                .find(|e| e.target_dir == m.target_dir)
             {
                 entry.size = Some(m.size);
                 entry.last_modified = m.last_modified;
@@ -266,8 +269,7 @@ impl App {
             Some(i) => visible.get(i - 1).copied(),
             None => None,
         };
-        let neighbor =
-            neighbor_idx.and_then(|i| self.entries.get(i).map(|e| e.target_dir.clone()));
+        let neighbor = neighbor_idx.and_then(|i| self.entries.get(i).map(|e| e.target_dir.clone()));
         match std::fs::remove_dir_all(&target_dir) {
             Ok(()) => self.delete_error = None,
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => self.delete_error = None,
@@ -276,11 +278,7 @@ impl App {
                 return;
             }
         }
-        if let Some(entry) = self
-            .entries
-            .iter_mut()
-            .find(|e| e.target_dir == target_dir)
-        {
+        if let Some(entry) = self.entries.iter_mut().find(|e| e.target_dir == target_dir) {
             entry.size = Some(0);
             entry.last_modified = None;
         }
@@ -339,7 +337,9 @@ impl App {
                 })
             }
             SortKey::Name => entries.sort_by(|a, b| {
-                a.project_path.cmp(&b.project_path).then(a.target_dir.cmp(&b.target_dir))
+                a.project_path
+                    .cmp(&b.project_path)
+                    .then(a.target_dir.cmp(&b.target_dir))
             }),
         }
     }

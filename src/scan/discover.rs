@@ -3,8 +3,13 @@
 //! which still measure. Projects with `build.target-dir` /
 //! `build.build-dir` in `.cargo/config.toml` report those dirs instead of
 use std::{
+    collections::HashSet,
     path::{Path, PathBuf},
-    sync::{Arc, Mutex, RwLock, mpsc},
+    sync::{
+        Arc, Mutex, RwLock,
+        atomic::{AtomicBool, Ordering},
+        mpsc,
+    },
 };
 
 use ignore::{DirEntry, WalkBuilder, WalkState};
@@ -30,9 +35,14 @@ pub enum ScanEvent {
 /// Shared walk state: config cache, known output dirs, manifest dirs.
 struct Ctx {
     resolver: Mutex<Resolver>,
-    /// Absolute output dirs to skip descending into. Best effort: entries
-    /// racing registration still walk once, results stay correct.
-    customs: RwLock<Vec<PathBuf>>,
+    /// Non-default output dirs to skip descending into. Defaults
+    /// (`<proj>/target`) are pruned by name in `keep_entry`, so this stays
+    /// empty in the common case. Best effort: entries racing registration
+    /// still walk once, results stay correct.
+    customs: RwLock<HashSet<PathBuf>>,
+    /// Set once a custom dir registers. Lets `keep_entry` skip the lock
+    /// entirely while no customs exist.
+    has_customs: AtomicBool,
     manifests: Mutex<Vec<PathBuf>>,
 }
 
@@ -40,10 +50,15 @@ struct Ctx {
 #[tracing::instrument(skip_all, fields(root = %root.display()))]
 pub fn discover(root: &Path) -> Vec<DiscoveredEntry> {
     let mut resolver = Resolver::new();
-    let customs = RwLock::new(resolver.outer_dirs(root).into_iter().filter(|d| d != root).collect());
+    let customs: HashSet<PathBuf> = resolver
+        .outer_dirs(root)
+        .into_iter()
+        .filter(|d| d != root)
+        .collect();
     let ctx = Arc::new(Ctx {
         resolver: Mutex::new(resolver),
-        customs,
+        has_customs: AtomicBool::new(!customs.is_empty()),
+        customs: RwLock::new(customs),
         manifests: Mutex::new(Vec::new()),
     });
     WalkBuilder::new(root)
@@ -61,8 +76,12 @@ pub fn discover(root: &Path) -> Vec<DiscoveredEntry> {
             let ctx = Arc::clone(&ctx);
             Box::new(move |result: Result<DirEntry, ignore::Error>| visit_entry(result, &ctx))
         });
-    let Ctx { resolver, customs: _, manifests } =
-        Arc::try_unwrap(ctx).map_err(|_| ()).expect("walk done");
+    let Ctx {
+        resolver,
+        customs: _,
+        has_customs: _,
+        manifests,
+    } = Arc::try_unwrap(ctx).map_err(|_| ()).expect("walk done");
     let manifests = manifests.into_inner().unwrap_or_default();
     let mut resolver = resolver.into_inner().unwrap_or_else(|_| Resolver::new());
     let mut entries = Vec::new();
@@ -74,7 +93,9 @@ pub fn discover(root: &Path) -> Vec<DiscoveredEntry> {
         }
     }
     entries.sort_by(|a, b| {
-        a.project_path.cmp(&b.project_path).then(a.target_dir.cmp(&b.target_dir))
+        a.project_path
+            .cmp(&b.project_path)
+            .then(a.target_dir.cmp(&b.target_dir))
     });
     tracing::info!(count = entries.len(), "discovery complete");
     entries
@@ -102,12 +123,14 @@ fn keep_entry(entry: &DirEntry, ctx: &Ctx) -> bool {
     }
     // Skip known cargo output dirs before paying to enumerate them. The
     // check runs on dirs only: files under a kept tree are cheap, and a
-    // pruned parent hides its whole subtree.
-    if entry.file_type().is_some_and(|kind| kind.is_dir()) {
-        let path = entry.path();
-        if is_under_customs(ctx, path) && !is_manifest_dir(path) {
-            return false;
-        }
+    // pruned parent hides its whole subtree. Skipped entirely until a
+    // custom dir registers, so the common case pays no lock here.
+    if entry.file_type().is_some_and(|kind| kind.is_dir())
+        && ctx.has_customs.load(Ordering::Relaxed)
+        && is_under_customs(ctx, entry.path())
+        && !is_manifest_dir(entry.path())
+    {
+        return false;
     }
     match entry.file_name().to_str() {
         Some(".git") | Some(".cargo") => false,
@@ -120,7 +143,9 @@ fn keep_entry(entry: &DirEntry, ctx: &Ctx) -> bool {
 
 fn is_under_customs(ctx: &Ctx, path: &Path) -> bool {
     ctx.customs.read().is_ok_and(|customs| {
-        customs.iter().any(|root| path != *root && path.starts_with(root))
+        // Strict ancestor in the set: same as `path != c && path.starts_with(c)`
+        // but O(depth) hashes instead of a scan over every known dir.
+        path.ancestors().skip(1).any(|a| customs.contains(a))
     })
 }
 
@@ -130,7 +155,9 @@ fn is_manifest_dir(dir: &Path) -> bool {
 
 /// Whether `dir` is a `target/` with a sibling `Cargo.toml`.
 fn is_project_target(dir: &Path) -> bool {
-    dir.parent().map(|parent| parent.join("Cargo.toml").is_file()).unwrap_or(false)
+    dir.parent()
+        .map(|parent| parent.join("Cargo.toml").is_file())
+        .unwrap_or(false)
 }
 
 fn visit_entry(result: Result<DirEntry, ignore::Error>, ctx: &Ctx) -> WalkState {
@@ -145,16 +172,27 @@ fn visit_entry(result: Result<DirEntry, ignore::Error>, ctx: &Ctx) -> WalkState 
     if !is_manifest_dir(dir) {
         return WalkState::Continue;
     }
-    // Register this project's output dirs so the walker skips them.
-    // Lock order is always resolver then customs.
-    if let Ok(mut resolver) = ctx.resolver.lock() {
-        let dirs = resolver.resolve(dir);
-        if let Ok(mut customs) = ctx.customs.write() {
-            for dir in dirs {
-                if !customs.contains(&dir) {
-                    customs.push(dir);
-                }
+    // Fast path: a local `target/` is pruned by name and needs no config
+    // I/O, so record the manifest without touching the resolver or customs
+    // locks. Only custom output dirs register for walk pruning.
+    let default_target = dir.join("target");
+    if !is_target_dir(&default_target) {
+        let customs_to_add: Vec<PathBuf> = ctx
+            .resolver
+            .lock()
+            .map(|mut resolver| {
+                resolver
+                    .resolve(dir)
+                    .into_iter()
+                    .filter(|d| *d != default_target)
+                    .collect()
+            })
+            .unwrap_or_default();
+        if !customs_to_add.is_empty() {
+            if let Ok(mut customs) = ctx.customs.write() {
+                customs.extend(customs_to_add);
             }
+            ctx.has_customs.store(true, Ordering::Relaxed);
         }
     }
     if let Ok(mut manifests) = ctx.manifests.lock() {
@@ -217,7 +255,11 @@ mod tests {
         let _ = fs::remove_dir_all(&root);
         fs::create_dir_all(root.join("proj/.cargo")).unwrap();
         fs::write(root.join("proj/Cargo.toml"), "[package]\n").unwrap();
-        fs::write(root.join("proj/.cargo/config.toml"), "[build]\ntarget-dir = \"../shared-out\"\n").unwrap();
+        fs::write(
+            root.join("proj/.cargo/config.toml"),
+            "[build]\ntarget-dir = \"../shared-out\"\n",
+        )
+        .unwrap();
         fs::create_dir_all(root.join("shared-out/debug")).unwrap();
         fs::write(root.join("shared-out/debug/blob.bin"), "hello").unwrap();
 
@@ -247,7 +289,10 @@ mod tests {
         let mut projects = discover(&root);
         projects.sort_by(|a, b| a.target_dir.cmp(&b.target_dir));
         assert_eq!(
-            projects.iter().map(|e| e.target_dir.clone()).collect::<Vec<_>>(),
+            projects
+                .iter()
+                .map(|e| e.target_dir.clone())
+                .collect::<Vec<_>>(),
             vec![root.join("bout"), root.join("tout")]
         );
         assert!(projects.iter().all(|e| e.project_path == root.join("proj")));
@@ -260,7 +305,11 @@ mod tests {
         let _ = fs::remove_dir_all(&root);
         fs::create_dir_all(root.join("proj/.cargo")).unwrap();
         fs::write(root.join("proj/Cargo.toml"), "[package]\n").unwrap();
-        fs::write(root.join("proj/.cargo/config.toml"), "[build]\ntarget-dir = \"/nowhere-custom-xyz\"\n").unwrap();
+        fs::write(
+            root.join("proj/.cargo/config.toml"),
+            "[build]\ntarget-dir = \"/nowhere-custom-xyz\"\n",
+        )
+        .unwrap();
         // Leftover from before the config moved: still cleanable.
         fs::create_dir_all(root.join("proj/target")).unwrap();
         fs::write(root.join("proj/target/blob.bin"), "hello").unwrap();
@@ -277,7 +326,11 @@ mod tests {
         let _ = fs::remove_dir_all(&root);
         fs::create_dir_all(root.join("proj/.cargo")).unwrap();
         fs::write(root.join("proj/Cargo.toml"), "[package]\n").unwrap();
-        fs::write(root.join("proj/.cargo/config.toml"), "[build]\ntarget-dir = \"/nowhere-custom-xyz\"\n").unwrap();
+        fs::write(
+            root.join("proj/.cargo/config.toml"),
+            "[build]\ntarget-dir = \"/nowhere-custom-xyz\"\n",
+        )
+        .unwrap();
 
         assert!(discover(&root).is_empty());
         let _ = fs::remove_dir_all(&root);
@@ -299,7 +352,10 @@ mod tests {
             .last_modified
             .expect("target exists");
         assert!(
-            SystemTime::now().duration_since(mtime).unwrap_or(Duration::MAX) < Duration::from_secs(3600)
+            SystemTime::now()
+                .duration_since(mtime)
+                .unwrap_or(Duration::MAX)
+                < Duration::from_secs(3600)
         );
         let _ = fs::remove_dir_all(&root);
     }

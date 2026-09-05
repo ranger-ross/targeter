@@ -58,7 +58,17 @@ impl Resolver {
     /// Always includes the default `<manifest>/target` when it differs, so
     /// stale dirs left behind by a moved config still surface for cleanup.
     /// Callers keep the candidates that exist on disk.
+    ///
+    /// Fast path: when the default `<manifest>/target` is a real dir, skip
+    /// the ancestor `.cargo` probe chain entirely. That walk is file I/O per
+    /// distinct ancestor, while the default case only needs one metadata
+    /// probe. In-memory overrides (`$CARGO_HOME`, env) still apply. A project
+    /// with both a local `target/` and a file-configured custom dir reports
+    /// the local dir only.
     pub fn resolve(&mut self, manifest_dir: &Path) -> Vec<PathBuf> {
+        let default_target = manifest_dir.join("target");
+        // One probe, symlinks excluded like discovery's `is_target_dir`.
+        let has_default = std::fs::symlink_metadata(&default_target).is_ok_and(|md| md.is_dir());
         let mut target = None;
         let mut target_base = None;
         let mut build = None;
@@ -70,22 +80,28 @@ impl Resolver {
             build_base = Some(home.base.clone());
         }
         // Ancestors from the filesystem root down: deeper configs win.
-        let chain: Vec<PathBuf> = manifest_dir.ancestors().map(|a| a.to_path_buf()).collect();
-        for dir in chain.iter().rev() {
-            if let Some(cfg) = self.config_for(dir) {
-                // Clone out before touching other cache entries.
-                let (t, b, base) = (cfg.target_dir.clone(), cfg.build_dir.clone(), cfg.base.clone());
-                if t.is_some() {
-                    target = t;
-                    target_base = Some(base.clone());
-                }
-                if b.is_some() {
-                    build = b;
-                    build_base = Some(base);
+        // Skipped when the default exists: the common case pays no config I/O.
+        if !has_default {
+            let chain: Vec<PathBuf> = manifest_dir.ancestors().map(|a| a.to_path_buf()).collect();
+            for dir in chain.iter().rev() {
+                if let Some(cfg) = self.config_for(dir) {
+                    // Clone out before touching other cache entries.
+                    let (t, b, base) = (
+                        cfg.target_dir.clone(),
+                        cfg.build_dir.clone(),
+                        cfg.base.clone(),
+                    );
+                    if t.is_some() {
+                        target = t;
+                        target_base = Some(base.clone());
+                    }
+                    if b.is_some() {
+                        build = b;
+                        build_base = Some(base);
+                    }
                 }
             }
         }
-        let default_target = manifest_dir.join("target");
         let mut out = vec![default_target.clone()];
         let push = |out: &mut Vec<PathBuf>, dir: PathBuf| {
             if !out.iter().any(|d| d == &dir) {
@@ -103,7 +119,8 @@ impl Resolver {
         // value that templates cleanly and lands elsewhere adds a row.
         let build = self.env_build.clone().or_else(|| {
             build.and_then(|raw| {
-                build_base.and_then(|base| expand_build_dir(&raw, &base, manifest_dir, &self.cargo_home))
+                build_base
+                    .and_then(|base| expand_build_dir(&raw, &base, manifest_dir, &self.cargo_home))
             })
         });
         if let Some(dir) = build {
@@ -154,7 +171,10 @@ pub struct DiscoveredEntry {
 
 impl DiscoveredEntry {
     pub fn new(project_path: PathBuf, target_dir: PathBuf) -> Self {
-        Self { project_path, target_dir }
+        Self {
+            project_path,
+            target_dir,
+        }
     }
 }
 
@@ -162,7 +182,10 @@ impl DiscoveredEntry {
 impl From<PathBuf> for DiscoveredEntry {
     fn from(project_path: PathBuf) -> Self {
         let target_dir = project_path.join("target");
-        Self { project_path, target_dir }
+        Self {
+            project_path,
+            target_dir,
+        }
     }
 }
 
@@ -188,10 +211,18 @@ fn read_config(path: &Path) -> Option<ConfigFile> {
     // global file which sits directly in `$CARGO_HOME`.
     let base = path
         .parent()
-        .and_then(|d| (d.file_name().is_some_and(|n| n == ".cargo")).then(|| d.parent()).flatten())
+        .and_then(|d| {
+            (d.file_name().is_some_and(|n| n == ".cargo"))
+                .then(|| d.parent())
+                .flatten()
+        })
         .or_else(|| path.parent())
         .map(Path::to_path_buf)?;
-    Some(ConfigFile { base, target_dir, build_dir })
+    Some(ConfigFile {
+        base,
+        target_dir,
+        build_dir,
+    })
 }
 
 /// Extract `build.target-dir` / `build.build-dir` from config text.
@@ -212,7 +243,9 @@ fn parse_build_dirs(text: &str) -> (Option<String>, Option<String>) {
         if !in_build {
             continue;
         }
-        let Some((key, rhs)) = line.split_once('=') else { continue };
+        let Some((key, rhs)) = line.split_once('=') else {
+            continue;
+        };
         match key.trim() {
             "target-dir" => target_dir = parse_string_value(rhs),
             "build-dir" => build_dir = parse_string_value(rhs),
@@ -280,7 +313,12 @@ fn strip_comment(rhs: &str) -> &str {
     rhs
 }
 
-fn expand_build_dir(raw: &str, base: &Path, manifest_dir: &Path, cargo_home: &Path) -> Option<PathBuf> {
+fn expand_build_dir(
+    raw: &str,
+    base: &Path,
+    manifest_dir: &Path,
+    cargo_home: &Path,
+) -> Option<PathBuf> {
     if raw.contains("{workspace-path-hash}") {
         return None;
     }
@@ -332,7 +370,10 @@ fn cargo_home() -> PathBuf {
 }
 
 fn env_dir(key: &str) -> Option<PathBuf> {
-    std::env::var(key).ok().filter(|v| !v.trim().is_empty()).map(PathBuf::from)
+    std::env::var(key)
+        .ok()
+        .filter(|v| !v.trim().is_empty())
+        .map(PathBuf::from)
 }
 
 #[cfg(test)]
@@ -358,7 +399,9 @@ mod tests {
 
     #[test]
     fn parses_literal_strings_and_subtables_end_build() {
-        let (target, build) = parse_build_dirs("[build]\nbuild-dir = 'out/build'\n[build.x]\ntarget-dir = \"nope\"\n");
+        let (target, build) = parse_build_dirs(
+            "[build]\nbuild-dir = 'out/build'\n[build.x]\ntarget-dir = \"nope\"\n",
+        );
         assert_eq!(target, None);
         assert_eq!(build.as_deref(), Some("out/build"));
     }
@@ -373,7 +416,11 @@ mod tests {
     fn relative_resolves_against_cargo_parent() {
         let root = test_root("relative");
         fs::create_dir_all(root.join("proj/.cargo")).unwrap();
-        fs::write(root.join("proj/.cargo/config.toml"), "[build]\ntarget-dir = \"../shared-target\"\n").unwrap();
+        fs::write(
+            root.join("proj/.cargo/config.toml"),
+            "[build]\ntarget-dir = \"../shared-target\"\n",
+        )
+        .unwrap();
         let mut r = Resolver::new();
         // Config above the temp root cannot interfere: resolve only the leaf.
         let dirs = r.resolve(&root.join("proj"));
@@ -386,9 +433,17 @@ mod tests {
     fn deeper_config_wins_over_ancestor() {
         let root = test_root("precedence");
         fs::create_dir_all(root.join(".cargo")).unwrap();
-        fs::write(root.join(".cargo/config.toml"), "[build]\ntarget-dir = \"/outer\"\n").unwrap();
+        fs::write(
+            root.join(".cargo/config.toml"),
+            "[build]\ntarget-dir = \"/outer\"\n",
+        )
+        .unwrap();
         fs::create_dir_all(root.join("proj/.cargo")).unwrap();
-        fs::write(root.join("proj/.cargo/config.toml"), "[build]\ntarget-dir = \"/inner\"\n").unwrap();
+        fs::write(
+            root.join("proj/.cargo/config.toml"),
+            "[build]\ntarget-dir = \"/inner\"\n",
+        )
+        .unwrap();
         let mut r = Resolver::new();
         let dirs = r.resolve(&root.join("proj"));
         assert!(dirs.contains(&PathBuf::from("/inner")));
@@ -405,7 +460,11 @@ mod tests {
             "[build]\ntarget-dir = \"/bare\"\nbuild-dir = \"out/{workspace-path-hash}\"\n",
         )
         .unwrap();
-        fs::write(root.join("proj/.cargo/config.toml"), "[build]\ntarget-dir = \"/toml\"\n").unwrap();
+        fs::write(
+            root.join("proj/.cargo/config.toml"),
+            "[build]\ntarget-dir = \"/toml\"\n",
+        )
+        .unwrap();
         let mut r = Resolver::new();
         let dirs = r.resolve(&root.join("proj"));
         assert!(dirs.contains(&PathBuf::from("/bare")));
@@ -433,7 +492,11 @@ mod tests {
     fn many_projects_share_one_parse() {
         let root = test_root("shared-parse");
         fs::create_dir_all(root.join(".cargo")).unwrap();
-        fs::write(root.join(".cargo/config.toml"), "[build]\ntarget-dir = \"/shared\"\n").unwrap();
+        fs::write(
+            root.join(".cargo/config.toml"),
+            "[build]\ntarget-dir = \"/shared\"\n",
+        )
+        .unwrap();
         for proj in ["a", "b", "c"] {
             fs::create_dir_all(root.join(proj)).unwrap();
         }
@@ -443,6 +506,24 @@ mod tests {
             assert!(dirs.contains(&PathBuf::from("/shared")));
         }
         assert_eq!(r.cached_files(), 1, "one distinct .cargo dir parsed once");
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn default_target_skips_ancestor_config() {
+        let root = test_root("fast-path");
+        fs::create_dir_all(root.join("proj/target")).unwrap();
+        fs::create_dir_all(root.join("proj/.cargo")).unwrap();
+        fs::write(
+            root.join("proj/.cargo/config.toml"),
+            "[build]\ntarget-dir = \"/custom-fast-xyz\"\n",
+        )
+        .unwrap();
+        let mut r = Resolver::new();
+        let dirs = r.resolve(&root.join("proj"));
+        assert!(dirs.contains(&root.join("proj/target")));
+        assert!(!dirs.contains(&PathBuf::from("/custom-fast-xyz")));
+        assert_eq!(r.cached_files(), 0, "default target avoids config I/O");
         let _ = fs::remove_dir_all(&root);
     }
 }
