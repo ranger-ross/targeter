@@ -253,7 +253,7 @@ fn render_footer(frame: &mut Frame, area: Rect, app: &App) {
             Span::raw(" · / filter · r rescan · q quit"),
             Span::raw(filter),
         ]))
-        .block(crate::theme::card("keys")),
+        .block(crate::theme::card_plain()),
         area,
     );
 }
