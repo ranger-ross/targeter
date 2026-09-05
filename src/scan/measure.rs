@@ -161,8 +161,7 @@ mod tests {
         fs::create_dir_all(&deep).unwrap();
         fs::write(deep.join("a.bin"), "1234").unwrap();
         fs::write(deep.join("b.bin"), "12345678").unwrap();
-        // Pin to the inode mtime. Tmpfs timestamps can skew sub-ms
-        // against wall clock.
+        // Pin to the inode mtime instead of the wall clock.
         let expected = fs::symlink_metadata(deep.join("b.bin"))
             .unwrap()
             .modified()

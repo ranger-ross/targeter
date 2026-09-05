@@ -1,9 +1,3 @@
-//! Adaptive periodic re-measurement, replacing filesystem watchers.
-//!
-//! Recursive inotify costs a watch per subdir plus two paths per watch
-//! (~145MB on ~/projects), so freshness comes from polling instead. Each
-//! target dir has a tiered interval. Any size/mtime change promotes it.
-
 use std::{
     path::PathBuf,
     sync::mpsc,
@@ -29,33 +23,6 @@ const SEMI_INTERVAL: Duration = Duration::from_secs(30);
 const SEMI_QUIET_LIMIT: u32 = 6;
 /// Dormant dirs poll slowest until a change wakes them.
 const DORMANT_INTERVAL: Duration = Duration::from_secs(60);
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum Tier {
-    Unknown(u32),
-    Active,
-    SemiDormant(u32),
-    Dormant,
-}
-
-impl Tier {
-    fn interval(self) -> Duration {
-        match self {
-            Tier::Unknown(_) => UNKNOWN_INTERVAL,
-            Tier::Active => ACTIVE_INTERVAL,
-            Tier::SemiDormant(_) => SEMI_INTERVAL,
-            Tier::Dormant => DORMANT_INTERVAL,
-        }
-    }
-}
-
-struct Tracked {
-    target_dir: PathBuf,
-    tier: Tier,
-    next_due: Instant,
-    last_size: Option<u64>,
-    last_modified: Option<SystemTime>,
-}
 
 /// Owns poll tiers and the background re-measure pipeline.
 pub struct Poller {
@@ -192,6 +159,33 @@ impl Default for Poller {
     fn default() -> Self {
         Self::new()
     }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Tier {
+    Unknown(u32),
+    Active,
+    SemiDormant(u32),
+    Dormant,
+}
+
+impl Tier {
+    fn interval(self) -> Duration {
+        match self {
+            Tier::Unknown(_) => UNKNOWN_INTERVAL,
+            Tier::Active => ACTIVE_INTERVAL,
+            Tier::SemiDormant(_) => SEMI_INTERVAL,
+            Tier::Dormant => DORMANT_INTERVAL,
+        }
+    }
+}
+
+struct Tracked {
+    target_dir: PathBuf,
+    tier: Tier,
+    next_due: Instant,
+    last_size: Option<u64>,
+    last_modified: Option<SystemTime>,
 }
 
 #[cfg(test)]
