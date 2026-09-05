@@ -38,8 +38,8 @@ pub fn scan(root: &Path) -> Vec<TargetEntry> {
     tracing::info!(count = projects.len(), "discovery complete");
 
     // Each target measures on the shared rayon pool. Nested inside pdu's own
-    // parallel walk this just feeds one work queue, so the 1621ms outlier no
-    // longer blocks the other 100.
+    // parallel walk this just feeds one work queue, so the 1621ms outlier
+    // can't stall the other 100.
     let mut entries: Vec<TargetEntry> = projects
         .par_iter()
         .map(|project_path| {

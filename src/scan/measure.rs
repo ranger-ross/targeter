@@ -74,8 +74,7 @@ pub(super) fn recursive_scan_target<T: AsRef<Path>>(path: T) -> (u64, Option<Sys
     (total, Some(newest))
 }
 
-/// One entry's contribution. `mtime_ns` saturates pre-epoch times to zero,
-/// matching the old `modified().unwrap_or(EPOCH)`.
+/// One entry's contribution. `mtime_ns` saturates pre-epoch times to zero.
 struct EntryRec {
     #[cfg(unix)]
     dev: u64,

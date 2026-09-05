@@ -150,8 +150,8 @@ fn display_path(path: &std::path::Path) -> String {
 
 /// Relative age ("now", "30 seconds ago", "1 minute ago", "yesterday", ...).
 /// Bucketing and pluralization come from the `timeago` crate, with two
-/// overrides: under 5s reads as "now", and 24–48h reads as "yesterday"
-/// instead of the crate's "1 day ago". The 24–48h window is exact so the
+/// overrides: under 5s reads as "now", and 24-48h reads as "yesterday"
+/// instead of the crate's "1 day ago". The 24-48h window is exact so the
 /// phrase "1 day ago" can never surface alongside "yesterday".
 fn format_modified(last_modified: std::time::SystemTime) -> String {
     format_modified_at(last_modified, std::time::SystemTime::now())
@@ -174,8 +174,8 @@ fn format_age(age: std::time::Duration) -> String {
     timeago::Formatter::new().convert(age)
 }
 
-/// Timestamp for display; a deleted dir has no mtime, so it says so
-/// instead of rendering the epoch as "56 years ago".
+/// Timestamp for display; a deleted dir has no mtime, so it reads as
+/// "deleted" instead of rendering the epoch as "56 years ago".
 fn format_modified_opt(last_modified: Option<std::time::SystemTime>) -> String {
     match last_modified {
         Some(t) => format_modified(t),

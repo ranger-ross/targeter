@@ -25,8 +25,8 @@ const UNKNOWN_INTERVAL: Duration = Duration::from_secs(10);
 ///
 /// so the six-poll count wins; shout if 30s was meant.)
 const UNKNOWN_QUIET_LIMIT: u32 = 6;
-/// Active dirs (recently changed — or deleted, so a rebuild is caught
-/// fast) poll fastest and never relax.
+/// Active dirs (recently changed, or deleted so a rebuild is caught fast)
+/// poll fastest and never relax.
 const ACTIVE_INTERVAL: Duration = Duration::from_secs(3);
 /// Semi-dormant dirs proved idle once; poll slowly.
 const SEMI_INTERVAL: Duration = Duration::from_secs(30);
