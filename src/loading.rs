@@ -37,10 +37,6 @@ const TIER_MID: f32 = 0.22;
 /// 24-bit RGB stop.
 pub type Rgb = [u8; 3];
 
-const fn rgb(hex: u32) -> Rgb {
-    [(hex >> 16) as u8, (hex >> 8) as u8, hex as u8]
-}
-
 /// Three-tier color stack a character cycles through as the band sweeps.
 /// Low is the resting base, mid the approach, high the crest.
 pub struct ShimmerPalette {
@@ -57,49 +53,6 @@ pub const DEFAULT_PALETTE: ShimmerPalette = ShimmerPalette {
     high: rgb(0x58a6ff),
     bold_crest: true,
 };
-
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-enum Tier {
-    Low,
-    Mid,
-    High,
-}
-
-fn tier_for(intensity: f32) -> Tier {
-    if intensity >= TIER_HIGH {
-        Tier::High
-    } else if intensity >= TIER_MID {
-        Tier::Mid
-    } else {
-        Tier::Low
-    }
-}
-
-/// Smooth cosine bump sweeping left to right with edge padding.
-/// Returns 0 outside the band, 1 at the crest.
-fn intensity(elapsed: Duration, index: usize, len: usize) -> f32 {
-    let period = len as f32 + PADDING * 2.0;
-    let pos = (elapsed.as_secs_f32() * SPEED_CELLS_PER_S) % period;
-    let dist = (index as f32 + PADDING - pos).abs();
-    if dist >= BAND_HALF_WIDTH {
-        return 0.0;
-    }
-    0.5 * (1.0 + (std::f32::consts::PI * dist / BAND_HALF_WIDTH).cos())
-}
-
-fn style_for(tier: Tier, palette: &ShimmerPalette) -> Style {
-    let rgb = match tier {
-        Tier::Low => palette.low,
-        Tier::Mid => palette.mid,
-        Tier::High => palette.high,
-    };
-    let style = Style::default().fg(Color::Rgb(rgb[0], rgb[1], rgb[2]));
-    if tier == Tier::High && palette.bold_crest {
-        style.add_modifier(Modifier::BOLD)
-    } else {
-        style
-    }
-}
 
 /// Shimmered `Line` for `text` at `elapsed` since the load started.
 /// `None` selects [`DEFAULT_PALETTE`]. Same-tier runs coalesce into one
@@ -165,6 +118,52 @@ impl<'a> Loading<'a> {
 impl Widget for Loading<'_> {
     fn render(self, area: Rect, buf: &mut Buffer) {
         Paragraph::new(self.line()).render(area, buf);
+    }
+}
+
+const fn rgb(hex: u32) -> Rgb {
+    [(hex >> 16) as u8, (hex >> 8) as u8, hex as u8]
+}
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum Tier {
+    Low,
+    Mid,
+    High,
+}
+
+fn tier_for(intensity: f32) -> Tier {
+    if intensity >= TIER_HIGH {
+        Tier::High
+    } else if intensity >= TIER_MID {
+        Tier::Mid
+    } else {
+        Tier::Low
+    }
+}
+
+/// Smooth cosine bump sweeping left to right with edge padding.
+/// Returns 0 outside the band, 1 at the crest.
+fn intensity(elapsed: Duration, index: usize, len: usize) -> f32 {
+    let period = len as f32 + PADDING * 2.0;
+    let pos = (elapsed.as_secs_f32() * SPEED_CELLS_PER_S) % period;
+    let dist = (index as f32 + PADDING - pos).abs();
+    if dist >= BAND_HALF_WIDTH {
+        return 0.0;
+    }
+    0.5 * (1.0 + (std::f32::consts::PI * dist / BAND_HALF_WIDTH).cos())
+}
+
+fn style_for(tier: Tier, palette: &ShimmerPalette) -> Style {
+    let rgb = match tier {
+        Tier::Low => palette.low,
+        Tier::Mid => palette.mid,
+        Tier::High => palette.high,
+    };
+    let style = Style::default().fg(Color::Rgb(rgb[0], rgb[1], rgb[2]));
+    if tier == Tier::High && palette.bold_crest {
+        style.add_modifier(Modifier::BOLD)
+    } else {
+        style
     }
 }
 

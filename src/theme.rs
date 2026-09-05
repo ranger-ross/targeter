@@ -33,17 +33,17 @@ pub fn card_plain() -> Block<'static> {
     base()
 }
 
+/// Selected-row highlight matching omp's `selectedBg`.
+pub fn selected() -> Style {
+    Style::default()
+        .bg(SELECTED_BG)
+        .add_modifier(Modifier::BOLD)
+}
+
 fn base() -> Block<'static> {
     Block::default()
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded)
         .border_style(Style::default().fg(BORDER))
         .style(Style::default().bg(CARD_BG))
-}
-
-/// Selected-row highlight matching omp's `selectedBg`.
-pub fn selected() -> Style {
-    Style::default()
-        .bg(SELECTED_BG)
-        .add_modifier(Modifier::BOLD)
 }
