@@ -97,6 +97,13 @@ pub fn discover(root: &Path) -> Vec<DiscoveredEntry> {
             .cmp(&b.project_path)
             .then(a.target_dir.cmp(&b.target_dir))
     });
+    // One row per output dir. Workspace members and test fixtures often
+    // resolve to the same shared `target/` (e.g. via a workspace-level
+    // `build.target-dir`), which would repeat its size on every row and
+    // inflate totals. The owning project sorts first as a path prefix,
+    // so keep the first row per dir.
+    let mut seen = HashSet::new();
+    entries.retain(|e| seen.insert(e.target_dir.clone()));
     tracing::info!(count = entries.len(), "discovery complete");
     entries
 }
@@ -300,6 +307,32 @@ mod tests {
         let kinds: Vec<super::super::OutputKind> = projects.iter().map(|e| e.kind).collect();
         assert!(kinds.contains(&super::super::OutputKind::Target));
         assert!(kinds.contains(&super::super::OutputKind::Build));
+        let _ = fs::remove_dir_all(&root);
+    }
+    #[test]
+    fn workspace_members_sharing_one_target_collapse_to_one_row() {
+        let root = std::env::temp_dir().join("targeter-test-shared-target");
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(root.join("proj/.cargo")).unwrap();
+        fs::write(root.join("proj/Cargo.toml"), "[workspace]\n").unwrap();
+        fs::write(
+            root.join("proj/.cargo/config.toml"),
+            "[build]\ntarget-dir = \"target\"\n",
+        )
+        .unwrap();
+        fs::create_dir_all(root.join("proj/target")).unwrap();
+        fs::write(root.join("proj/target/blob.bin"), "hello").unwrap();
+        // Member and fixture manifests with no local target/ resolve to
+        // the same workspace target dir.
+        fs::create_dir_all(root.join("proj/member")).unwrap();
+        fs::write(root.join("proj/member/Cargo.toml"), "[package]\n").unwrap();
+        fs::create_dir_all(root.join("proj/tests/fixture")).unwrap();
+        fs::write(root.join("proj/tests/fixture/Cargo.toml"), "[package]\n").unwrap();
+
+        let projects = discover(&root);
+        assert_eq!(projects.len(), 1, "one row per output dir: {projects:?}");
+        assert_eq!(projects[0].project_path, root.join("proj"));
+        assert_eq!(projects[0].target_dir, root.join("proj/target"));
         let _ = fs::remove_dir_all(&root);
     }
 

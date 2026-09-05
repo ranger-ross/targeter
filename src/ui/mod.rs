@@ -122,7 +122,13 @@ pub fn render(frame: &mut Frame, app: &mut App) {
                     spans.push(Span::styled(label, Style::default().fg(color)));
                 }
                 let name = Text::from(Line::from(spans));
-                let mut size_text = Text::styled(format_size_opt(e.size), size_style(e.size));
+                let mut size_text = match e.size {
+                    Some(_) => Text::styled(format_size_opt(e.size), size_style(e.size)),
+                    None => Text::from(
+                        crate::ui::loading::Loading::new("Loading...", app.loading_start.elapsed())
+                            .line(),
+                    ),
+                };
                 size_text.alignment = Some(Alignment::Right);
                 let mut row = Row::new([
                     Cell::from(name),
@@ -165,8 +171,8 @@ fn right_text(text: impl Into<String>) -> Text<'static> {
     t
 }
 
-/// Heat color for the Size cell. Tiny and pending read dim, large
-/// yellow, huge red.
+/// Heat color for measured Size cells. Tiny reads dim, large yellow,
+/// huge red.
 fn size_style(size: Option<u64>) -> Style {
     const SMALL: u64 = 50 * 1024 * 1024;
     const LARGE: u64 = 1024 * 1024 * 1024;
@@ -180,7 +186,7 @@ fn size_style(size: Option<u64>) -> Style {
     }
 }
 
-/// Binary-unit sizes matching `du -h`. Pending entries read as `-`.
+/// Binary-unit sizes matching `du -h`. Unmeasured entries read as `-`.
 fn format_size_opt(size: Option<u64>) -> String {
     size.map_or_else(|| "-".to_string(), format_size)
 }
@@ -554,6 +560,25 @@ mod tests {
         for want in ["PROJECT", "SIZE", "MODIFIED", "PATH", "▶"] {
             assert!(text.contains(want), "missing {want}");
         }
+    }
+    #[test]
+    fn pending_rows_show_loading_in_size_column() {
+        use ratatui::{Terminal, backend::TestBackend};
+        let mut app = App::new(std::path::PathBuf::from("."));
+        app.set_discovered(vec![std::path::PathBuf::from("proj-a")]);
+        let backend = TestBackend::new(100, 24);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal.draw(|f| render(f, &mut app)).unwrap();
+        let buf = terminal.backend().buffer().clone();
+        let mut text = String::new();
+        for y in 0..buf.area.height {
+            for x in 0..buf.area.width {
+                text.push_str(buf[(x, y)].symbol());
+            }
+            text.push('\n');
+        }
+        assert!(text.contains("proj-a"), "discovered row shows at once");
+        assert!(text.contains("Loading"), "pending size shimmers");
     }
 
     #[test]

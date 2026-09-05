@@ -29,7 +29,6 @@ pub struct App {
 }
 
 impl App {
-
     pub fn new(root: PathBuf) -> Self {
         let mut table_state = TableState::default();
         table_state.select(Some(0));
@@ -77,7 +76,7 @@ impl App {
     }
 
     /// End the size walk. Measured rows keep their sizes; entries still
-    /// pending keep `None` and read as `-` until the poller measures them.
+    /// pending show `Loading...` until the poller measures them.
     pub fn finish_scan(&mut self, build_cache: Option<TargetEntry>) {
         self.build_cache = build_cache;
         self.scanning = false;
@@ -307,11 +306,12 @@ impl App {
 
     fn sort_entries(&self, entries: &mut [TargetEntry]) {
         match self.sort {
-            // Pending sizes sink below measured ones.
+            // Pending rows float above measured ones: big dirs take
+            // longest to measure, so they stay visible while loading.
             SortKey::Size => entries.sort_by(|a, b| match (a.size, b.size) {
                 (Some(x), Some(y)) => y.cmp(&x),
-                (Some(_), None) => std::cmp::Ordering::Less,
-                (None, Some(_)) => std::cmp::Ordering::Greater,
+                (Some(_), None) => std::cmp::Ordering::Greater,
+                (None, Some(_)) => std::cmp::Ordering::Less,
                 (None, None) => a
                     .project_path
                     .cmp(&b.project_path)
@@ -434,7 +434,7 @@ mod tests {
         assert!(app.scanning);
         assert_eq!(app.total_size, 0);
         assert!(app.entries.iter().all(|e| e.size.is_none()));
-        // One measurement fills its row; pending rows sink, totals skip them.
+        // One measurement fills its row; pending rows float above, totals skip them.
         app.apply_measurements(&[Measurement {
             target_dir: PathBuf::from("proj-a/target"),
             size: 50,
@@ -442,13 +442,13 @@ mod tests {
         }]);
         assert!(app.scanning);
         assert_eq!(app.total_size, 50);
-        assert_eq!(app.entries[0].project_path, PathBuf::from("proj-a"));
-        assert_eq!(app.entries[0].size, Some(50));
-        assert_eq!(app.entries[1].size, None);
+        assert_eq!(app.entries[0].size, None);
+        assert_eq!(app.entries[1].project_path, PathBuf::from("proj-a"));
+        assert_eq!(app.entries[1].size, Some(50));
         // Finishing keeps still-pending rows pending for the poller.
         app.finish_scan(None);
         assert!(!app.scanning);
-        assert_eq!(app.entries[1].size, None);
+        assert_eq!(app.entries[0].size, None);
     }
     #[test]
     fn fresh_discovery_jumps_to_top() {
@@ -464,15 +464,36 @@ mod tests {
     fn measurements_pin_to_top_until_taken_over() {
         let mut app = App::new(PathBuf::from("."));
         app.set_discovered(vec![PathBuf::from("proj-a"), PathBuf::from("proj-b")]);
-        // proj-b measures first and jumps above; selection stays on top
-        // instead of sinking with proj-a.
+        // proj-b measures first but pending proj-a floats above it;
+        // selection stays glued to the top until the user takes over.
         app.apply_measurements(&[Measurement {
             target_dir: PathBuf::from("proj-b/target"),
             size: 200,
             last_modified: Some(SystemTime::UNIX_EPOCH),
         }]);
-        assert_eq!(app.entries[0].project_path, PathBuf::from("proj-b"));
+        assert_eq!(app.entries[0].project_path, PathBuf::from("proj-a"));
         assert_eq!(app.table_state.selected(), Some(0));
+    }
+    #[test]
+    fn pending_rows_float_above_measured_in_size_order() {
+        let mut app = App::new(PathBuf::from("."));
+        app.set_discovered(vec![PathBuf::from("proj-a"), PathBuf::from("proj-b")]);
+        app.apply_measurements(&[Measurement {
+            target_dir: PathBuf::from("proj-b/target"),
+            size: 10,
+            last_modified: Some(SystemTime::UNIX_EPOCH),
+        }]);
+        assert_eq!(app.entries[0].project_path, PathBuf::from("proj-a"));
+        assert_eq!(app.entries[0].size, None);
+        assert_eq!(app.entries[1].project_path, PathBuf::from("proj-b"));
+        // Once everything measures, pure size-desc takes over.
+        app.apply_measurements(&[Measurement {
+            target_dir: PathBuf::from("proj-a/target"),
+            size: 200,
+            last_modified: Some(SystemTime::UNIX_EPOCH),
+        }]);
+        assert_eq!(app.entries[0].project_path, PathBuf::from("proj-a"));
+        assert_eq!(app.entries[1].project_path, PathBuf::from("proj-b"));
     }
 
     #[test]
@@ -481,14 +502,15 @@ mod tests {
         app.set_discovered(vec![PathBuf::from("proj-a"), PathBuf::from("proj-b")]);
         app.next();
         assert_eq!(app.table_state.selected(), Some(1));
-        // A measurement re-sorts but follows the user's row now.
+        // A measurement re-sorts but follows the user's row now. Measured
+        // proj-a sinks below pending proj-b, selection follows proj-b up.
         app.apply_measurements(&[Measurement {
             target_dir: PathBuf::from("proj-a/target"),
             size: 200,
             last_modified: Some(SystemTime::UNIX_EPOCH),
         }]);
-        assert_eq!(app.entries[1].project_path, PathBuf::from("proj-b"));
-        assert_eq!(app.table_state.selected(), Some(1));
+        assert_eq!(app.entries[0].project_path, PathBuf::from("proj-b"));
+        assert_eq!(app.table_state.selected(), Some(0));
     }
 
     #[test]
