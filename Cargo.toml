@@ -17,3 +17,4 @@ tracing-chrome = "0.7"
 tracing-subscriber = "0.3"
 parallel-disk-usage = { version = "0.24.0", default-features = false }
 ignore = "0.4.33"
+rayon = "1.12.0"

@@ -5,6 +5,7 @@ use std::{
 
 use eyre::Context;
 use notify::{Config, EventKind, RecommendedWatcher, RecursiveMode, Watcher};
+use rayon::prelude::*;
 
 use crate::app::App;
 use crate::scan::{self, Measurement};
@@ -115,7 +116,10 @@ impl LiveWatcher {
             let tx = self.measure_tx.clone();
             let id = self.flush_seq;
             std::thread::spawn(move || {
-                let measurements = due.iter().map(|dir| scan::measure_target(dir)).collect();
+                let measurements = due
+                    .par_iter()
+                    .map(|dir| scan::measure_target(dir))
+                    .collect();
                 let _ = tx.send((id, measurements));
             });
         }

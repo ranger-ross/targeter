@@ -4,6 +4,7 @@ use std::{
 };
 
 use ignore::{DirEntry, WalkBuilder, WalkState};
+use rayon::prelude::*;
 
 use super::{TargetEntry, measure::recursive_scan_target};
 
@@ -36,8 +37,11 @@ pub fn scan(root: &Path) -> Vec<TargetEntry> {
     let projects = projects.into_inner().unwrap_or_default();
     tracing::info!(count = projects.len(), "discovery complete");
 
+    // Each target measures on the shared rayon pool. Nested inside pdu's own
+    // parallel walk this just feeds one work queue, so the 1621ms outlier no
+    // longer blocks the other 100.
     let mut entries: Vec<TargetEntry> = projects
-        .iter()
+        .par_iter()
         .map(|project_path| {
             let (size, last_modified) = recursive_scan_target(project_path.join("target"));
             TargetEntry {

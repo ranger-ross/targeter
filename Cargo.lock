@@ -1933,6 +1933,7 @@ dependencies = [
  "num_cpus",
  "parallel-disk-usage",
  "ratatui",
+ "rayon",
  "regex",
  "tracing",
  "tracing-chrome",
