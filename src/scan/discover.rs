@@ -141,7 +141,7 @@ mod tests {
         assert_eq!(entries[0].project_path, root.join("proj-a"));
         // Disk usage, not apparent length: blocks for the file plus its dirs.
         assert!(entries[0].size >= 5);
-        assert!(entries[0].last_modified > SystemTime::UNIX_EPOCH);
+        assert!(entries[0].last_modified.is_some_and(|t| t > SystemTime::UNIX_EPOCH));
         let _ = fs::remove_dir_all(&root);
     }
 
@@ -158,10 +158,9 @@ mod tests {
         assert_eq!(entries.len(), 1);
         assert_eq!(entries[0].project_path, root.join("workspace/member"));
         // Sanity: fixture mtime is recent (within the last hour).
+        let mtime = entries[0].last_modified.expect("target exists");
         assert!(
-            SystemTime::now()
-                .duration_since(entries[0].last_modified)
-                .unwrap_or(Duration::MAX)
+            SystemTime::now().duration_since(mtime).unwrap_or(Duration::MAX)
                 < Duration::from_secs(3600)
         );
         let _ = fs::remove_dir_all(&root);

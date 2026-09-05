@@ -82,7 +82,7 @@ pub fn render(frame: &mut Frame, app: &mut App) {
             Row::new([
                 Cell::from(e.project_name()),
                 Cell::from(format_size(e.size)),
-                Cell::from(format_modified(e.last_modified)),
+                Cell::from(format_modified_opt(e.last_modified)),
                 Cell::from(display_path(&e.project_path)),
             ])
             .height(1)
@@ -174,6 +174,15 @@ fn format_age(age: std::time::Duration) -> String {
     timeago::Formatter::new().convert(age)
 }
 
+/// Timestamp for display; a deleted dir has no mtime, so it says so
+/// instead of rendering the epoch as "56 years ago".
+fn format_modified_opt(last_modified: Option<std::time::SystemTime>) -> String {
+    match last_modified {
+        Some(t) => format_modified(t),
+        None => "deleted".to_string(),
+    }
+}
+
 /// Pinned row for the unstable cargo build cache. It lives outside the scan
 /// root, so it gets its own section instead of a table row.
 fn render_build_cache(frame: &mut Frame, area: Rect, app: &App) {
@@ -181,7 +190,7 @@ fn render_build_cache(frame: &mut Frame, area: Rect, app: &App) {
         Some(entry) => format!(
             "{} ({})  {}",
             format_size(entry.size),
-            format_modified(entry.last_modified),
+            format_modified_opt(entry.last_modified),
             display_path(&entry.project_path)
         ),
         None if app.scanning => "Measuring…".to_string(),
@@ -274,6 +283,15 @@ mod tests {
         // Clock skew or just-written files read as now, never panic.
         assert_eq!(
             format_modified_at(now + Duration::from_secs(60), now),
+            "now"
+        );
+    }
+
+    #[test]
+    fn deleted_dir_reads_as_deleted() {
+        assert_eq!(format_modified_opt(None), "deleted");
+        assert_eq!(
+            format_modified_opt(Some(std::time::SystemTime::now())),
             "now"
         );
     }

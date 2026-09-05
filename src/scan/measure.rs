@@ -15,7 +15,9 @@ pub struct Measurement {
     /// The `target/` dir (or build-cache dir) that was re-measured.
     pub target_dir: PathBuf,
     pub size: u64,
-    pub last_modified: SystemTime,
+    /// Newest mtime found, or `None` when the dir is gone (deleted or
+    /// never arrived). `None` never counts as activity.
+    pub last_modified: Option<SystemTime>,
 }
 
 /// Re-measure one known directory. Uses the same math as the full scan for one path.
@@ -32,14 +34,14 @@ pub fn measure_target(target_dir: &Path) -> Measurement {
 /// Recursively measure disk usage and track the newest mtime in one parallel walk.
 ///
 /// Size matches `du`: allocated-block sizes, each inode counted once. Missing
-/// paths count as empty. Unreadable subtrees add nothing. Symlinks contribute
-/// their own inode blocks but are never followed, so linked trees cannot
-/// loop or double-count.
+/// paths measure as empty with no timestamp. Unreadable subtrees add nothing.
+/// Symlinks contribute their own inode blocks but are never followed, so
+/// linked trees cannot loop or double-count.
 #[tracing::instrument(skip_all, fields(path = %path.as_ref().display()))]
-pub(super) fn recursive_scan_target<T: AsRef<Path>>(path: T) -> (u64, SystemTime) {
+pub(super) fn recursive_scan_target<T: AsRef<Path>>(path: T) -> (u64, Option<SystemTime>) {
     let path = path.as_ref();
     if !path.exists() || path.is_symlink() {
-        return (0, SystemTime::UNIX_EPOCH);
+        return (0, None);
     }
     // Serial walk with an inline fold: no channel, no extra threads. Targets
     // already measure in parallel (discover.rs), so per-target pools would
@@ -47,7 +49,11 @@ pub(super) fn recursive_scan_target<T: AsRef<Path>>(path: T) -> (u64, SystemTime
     #[cfg(unix)]
     let mut seen = HashSet::new();
     let mut total = 0u64;
-    let mut newest = SystemTime::UNIX_EPOCH;
+    // Floor at the dir's own mtime so an existing-but-empty dir still
+    // reports a real timestamp instead of the epoch.
+    let mut newest = std::fs::symlink_metadata(path)
+        .and_then(|md| md.modified())
+        .unwrap_or(SystemTime::UNIX_EPOCH);
     let walk = WalkBuilder::new(path)
         .hidden(false)
         .require_git(false)
@@ -55,7 +61,9 @@ pub(super) fn recursive_scan_target<T: AsRef<Path>>(path: T) -> (u64, SystemTime
         .build();
     for result in walk {
         let Ok(entry) = result else { continue };
-        let Some(rec) = record_entry(&entry) else { continue };
+        let Some(rec) = record_entry(&entry) else {
+            continue;
+        };
         #[cfg(unix)]
         if !seen.insert((rec.dev, rec.ino)) {
             continue;
@@ -63,7 +71,7 @@ pub(super) fn recursive_scan_target<T: AsRef<Path>>(path: T) -> (u64, SystemTime
         total += rec.size;
         newest = newest.max(SystemTime::UNIX_EPOCH + Duration::from_nanos(rec.mtime_ns));
     }
-    (total, newest)
+    (total, Some(newest))
 }
 
 /// One entry's contribution. `mtime_ns` saturates pre-epoch times to zero,
@@ -98,7 +106,6 @@ fn record_entry(entry: &DirEntry) -> Option<EntryRec> {
     })
 }
 
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -122,12 +129,9 @@ mod tests {
         fs::hard_link(target.join("a.bin"), target.join("a-link.bin")).unwrap();
         let (deduped, mtime) = recursive_scan_target(&target);
         assert_eq!(deduped, alone);
-        assert!(mtime > SystemTime::UNIX_EPOCH);
-        // Missing path degrades to empty.
-        assert_eq!(
-            recursive_scan_target(root.join("nope")),
-            (0, SystemTime::UNIX_EPOCH)
-        );
+        assert!(mtime.is_some_and(|t| t > SystemTime::UNIX_EPOCH));
+        // Missing path degrades to empty with no timestamp.
+        assert_eq!(recursive_scan_target(root.join("nope")), (0, None));
         let _ = fs::remove_dir_all(&root);
     }
     #[cfg(unix)]
@@ -171,7 +175,7 @@ mod tests {
             .modified()
             .unwrap();
         let (_, mtime) = recursive_scan_target(root.join("target"));
-        assert_eq!(mtime, expected);
+        assert_eq!(mtime, Some(expected));
         let _ = fs::remove_dir_all(&root);
     }
 }

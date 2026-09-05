@@ -10,7 +10,10 @@ pub use cache::{build_cache_entry, build_cache_path};
 pub use discover::scan;
 pub use measure::{Measurement, measure_target};
 
-use std::{path::{Path, PathBuf}, time::SystemTime};
+use std::{
+    path::{Path, PathBuf},
+    time::SystemTime,
+};
 
 /// A Rust project with a `target/` directory on disk.
 #[derive(Clone, Debug)]
@@ -19,8 +22,9 @@ pub struct TargetEntry {
     pub project_path: PathBuf,
     /// Disk usage of `target/` in bytes, `du` semantics.
     pub size: u64,
-    /// Most recently modified mtime found under `target/`.
-    pub last_modified: SystemTime,
+    /// Most recently modified mtime found under `target/`, or `None`
+    /// while the dir is deleted (renders as "deleted", sorts last).
+    pub last_modified: Option<SystemTime>,
 }
 
 impl TargetEntry {

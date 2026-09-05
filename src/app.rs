@@ -140,7 +140,9 @@ impl App {
             {
                 cache.size = m.size;
                 cache.last_modified = m.last_modified;
-            } else if Some(&m.target_dir) == self.build_cache_path.as_ref() && m.target_dir.is_dir() {
+            } else if Some(&m.target_dir) == self.build_cache_path.as_ref()
+                && m.last_modified.is_some()
+            {
                 // The build cache arrived after startup. Give it a row now;
                 // the poller tracks it from the next reset.
                 self.build_cache = Some(TargetEntry {
@@ -199,7 +201,15 @@ impl App {
     fn sort_entries(&self, entries: &mut [TargetEntry]) {
         match self.sort {
             SortKey::Size => entries.sort_by_key(|a| std::cmp::Reverse(a.size)),
-            SortKey::Modified => entries.sort_by_key(|a| std::cmp::Reverse(a.last_modified)),
+            SortKey::Modified => {
+                entries.sort_by(|a, b| match (&a.last_modified, &b.last_modified) {
+                    // Deleted dirs have no timestamp; they always sink.
+                    (None, None) => std::cmp::Ordering::Equal,
+                    (None, _) => std::cmp::Ordering::Greater,
+                    (_, None) => std::cmp::Ordering::Less,
+                    (Some(x), Some(y)) => y.cmp(x),
+                })
+            }
             SortKey::Name => entries.sort_by(|a, b| a.project_path.cmp(&b.project_path)),
         }
     }
@@ -241,7 +251,7 @@ mod tests {
         TargetEntry {
             project_path: PathBuf::from(path),
             size,
-            last_modified: SystemTime::UNIX_EPOCH,
+            last_modified: Some(SystemTime::UNIX_EPOCH),
         }
     }
 
@@ -260,7 +270,7 @@ mod tests {
         app.apply_measurements(&[Measurement {
             target_dir: PathBuf::from("proj-small/target"),
             size: 200,
-            last_modified: SystemTime::UNIX_EPOCH,
+            last_modified: Some(SystemTime::UNIX_EPOCH),
         }]);
         assert_eq!(app.entries[0].project_path, PathBuf::from("proj-small"));
         assert_eq!(app.total_size, 300);
@@ -279,7 +289,7 @@ mod tests {
         app.apply_measurements(&[Measurement {
             target_dir: PathBuf::from("gone/target"),
             size: 999,
-            last_modified: SystemTime::UNIX_EPOCH,
+            last_modified: Some(SystemTime::UNIX_EPOCH),
         }]);
         assert_eq!(app.total_size, 110);
     }
@@ -295,22 +305,24 @@ mod tests {
             vec![TargetEntry {
                 project_path: root.join("proj"),
                 size: 1,
-                last_modified: SystemTime::UNIX_EPOCH,
+                last_modified: Some(SystemTime::UNIX_EPOCH),
             }],
             None,
         );
         let target = root.join("proj/target");
 
-        // Deletion zeroes the row.
+        // Deletion zeroes the row and clears its timestamp.
         std::fs::remove_dir_all(&target).unwrap();
         app.apply_measurements(&[measure_target(&target)]);
         assert_eq!(app.entries[0].size, 0);
+        assert_eq!(app.entries[0].last_modified, None);
 
-        // Recreation restores the row.
+        // Recreation restores the row with a real timestamp.
         std::fs::create_dir_all(target.join("debug")).unwrap();
         std::fs::write(target.join("debug/a.bin"), "1234").unwrap();
         app.apply_measurements(&[measure_target(&target)]);
         assert!(app.entries[0].size > 0);
+        assert!(app.entries[0].last_modified.is_some());
         let _ = std::fs::remove_dir_all(&root);
     }
 

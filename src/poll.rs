@@ -58,7 +58,7 @@ struct Tracked {
     tier: Tier,
     next_due: Instant,
     last_size: u64,
-    last_modified: SystemTime,
+    last_modified: Option<SystemTime>,
 }
 
 /// Owns poll tiers and the background re-measure pipeline.
@@ -93,28 +93,18 @@ impl Poller {
     fn reset_at(&mut self, app: &App, now: Instant) {
         while self.measure_rx.try_recv().is_ok() {}
         self.in_flight = false;
-        let mut dirs: Vec<(PathBuf, u64, SystemTime)> = app
+        let mut dirs: Vec<(PathBuf, u64, Option<SystemTime>)> = app
             .entries
             .iter()
-            .map(|e| {
-                (
-                    e.project_path.join("target"),
-                    e.size,
-                    e.last_modified,
-                )
-            })
+            .map(|e| (e.project_path.join("target"), e.size, e.last_modified))
             .collect();
         // The build cache rides along: measured entry when present, else the
         // prospective path so its arrival is picked up like any change.
         match &app.build_cache {
-            Some(cache) => dirs.push((
-                cache.project_path.clone(),
-                cache.size,
-                cache.last_modified,
-            )),
+            Some(cache) => dirs.push((cache.project_path.clone(), cache.size, cache.last_modified)),
             None => {
                 if let Some(path) = &app.build_cache_path {
-                    dirs.push((path.clone(), 0, SystemTime::UNIX_EPOCH));
+                    dirs.push((path.clone(), 0, None));
                 }
             }
         }
@@ -179,9 +169,10 @@ impl Poller {
             else {
                 continue;
             };
-            // A deleted dir reads as empty; don't mistake that for activity,
-            // but keep the old baseline so recreation wakes it to Active.
-            if !m.target_dir.is_dir() {
+            // A deleted dir measures no timestamp; don't mistake its
+            // zeroed size for activity, but keep the old baseline so
+            // recreation wakes it to Active.
+            if m.last_modified.is_none() {
                 t.next_due = now + t.tier.interval();
                 continue;
             }
@@ -215,8 +206,8 @@ mod tests {
     use super::*;
     use crate::scan::TargetEntry;
 
-    /// Backing dirs for cases. Created (never written), so the poller's
-    /// missing-dir guard passes for live cases and fails for `proj-gone`.
+    /// Backing dirs for cases. Created (never written), so live dirs
+    /// measure `Some` and the never-created `proj-gone` measures `None`.
     fn test_root() -> PathBuf {
         std::env::temp_dir().join("targeter-test-poll")
     }
@@ -233,7 +224,7 @@ mod tests {
             entries.push(TargetEntry {
                 project_path: root.join(proj),
                 size,
-                last_modified: SystemTime::UNIX_EPOCH,
+                last_modified: Some(SystemTime::UNIX_EPOCH),
             });
         }
         let mut app = App::new(root);
@@ -243,11 +234,19 @@ mod tests {
         app
     }
 
+    /// A deleted dir measures zero size with no timestamp.
+    fn missing_measurement(proj: &str) -> Measurement {
+        Measurement {
+            target_dir: target_dir(proj),
+            size: 0,
+            last_modified: None,
+        }
+    }
     fn measurement(proj: &str, size: u64) -> Measurement {
         Measurement {
             target_dir: target_dir(proj),
             size,
-            last_modified: SystemTime::UNIX_EPOCH,
+            last_modified: Some(SystemTime::UNIX_EPOCH),
         }
     }
 
@@ -350,7 +349,7 @@ mod tests {
             vec![TargetEntry {
                 project_path: root.join("proj-gone"),
                 size: 100,
-                last_modified: SystemTime::UNIX_EPOCH,
+                last_modified: Some(SystemTime::UNIX_EPOCH),
             }],
             None,
         );
@@ -359,7 +358,9 @@ mod tests {
         let now = Instant::now();
         poller.reset_at(&app, now);
         // Reads as empty but must not count as activity.
-        poller.apply(vec![measurement("proj-gone", 0)], &mut app, now);
+        poller.apply(vec![missing_measurement("proj-gone")], &mut app, now);
+        assert_eq!(app.entries[0].size, 0);
+        assert!(app.entries[0].last_modified.is_none());
         assert_eq!(tier_of(&poller, "proj-gone"), Tier::Unknown(0));
     }
 

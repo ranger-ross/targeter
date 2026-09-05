@@ -57,7 +57,7 @@ mod tests {
         let entry = build_cache_entry_at(&root.join("build-cache")).expect("cache dir exists");
         assert_eq!(entry.project_path, root.join("build-cache"));
         assert!(entry.size >= 8);
-        assert!(entry.last_modified > SystemTime::UNIX_EPOCH);
+        assert!(entry.last_modified.is_some_and(|t| t > SystemTime::UNIX_EPOCH));
         let _ = fs::remove_dir_all(&root);
     }
 
