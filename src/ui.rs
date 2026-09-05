@@ -4,7 +4,7 @@ use ratatui::{
     layout::{Constraint, Layout, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, Borders, Cell, Paragraph, Row, Table},
+    widgets::{Cell, Paragraph, Row, Table},
 };
 
 use crate::app::App;
@@ -12,15 +12,25 @@ use crate::app::App;
 #[tracing::instrument(skip_all)]
 pub fn render(frame: &mut Frame, app: &mut App) {
     let area = frame.area();
-    let [header_area, cache_area, table_area, footer_area] = Layout::vertical([
-        Constraint::Length(3),
+    let [top_area, table_area, footer_area] = Layout::vertical([
         Constraint::Length(3),
         Constraint::Min(0),
         Constraint::Length(3),
     ])
     .areas(area);
+    // The cache card only earns its half of the top row once a measurement
+    // exists. During the initial load there is nothing to show yet.
+    let show_cache = app.build_cache.is_some();
+    let (summary_area, cache_area) = if show_cache {
+        let [left, right] =
+            Layout::horizontal([Constraint::Percentage(50), Constraint::Percentage(50)])
+                .areas(top_area);
+        (left, Some(right))
+    } else {
+        (top_area, None)
+    };
 
-    let title = format!(" targeter: {} ", display_path(&app.root));
+    let root = display_path(&app.root);
     let visible = app.visible_indices();
     let visible_size: u64 = visible
         .iter()
@@ -45,17 +55,19 @@ pub fn render(frame: &mut Frame, app: &mut App) {
     frame.render_widget(
         Paragraph::new(Line::from(vec![
             Span::styled(
-                title,
+                root,
                 Style::default()
                     .fg(Color::Green)
                     .add_modifier(Modifier::BOLD),
             ),
-            Span::raw(counts),
+            Span::raw(format!(" · {counts}")),
         ]))
-        .block(Block::default().borders(Borders::ALL)),
-        header_area,
+        .block(crate::theme::card("Summary")),
+        summary_area,
     );
-    render_build_cache(frame, cache_area, app);
+    if let Some(cache_area) = cache_area {
+        render_build_cache(frame, cache_area, app);
+    }
 
     if app.scanning {
         frame.render_widget(
@@ -66,19 +78,18 @@ pub fn render(frame: &mut Frame, app: &mut App) {
                 )
                 .line(),
             )
-            .block(crate::theme::card("projects", true)),
+            .block(crate::theme::card_plain()),
             table_area,
         );
     } else if app.entries.is_empty() {
         frame.render_widget(
-            Paragraph::new("No target/ directories found.")
-                .block(crate::theme::card("projects", false)),
+            Paragraph::new("No target/ directories found.").block(crate::theme::card_plain()),
             table_area,
         );
     } else if visible.is_empty() {
         frame.render_widget(
             Paragraph::new(format!("No match for /{}.", app.filter_text))
-                .block(crate::theme::card("projects", false)),
+                .block(crate::theme::card_plain()),
             table_area,
         );
     } else {
@@ -103,7 +114,7 @@ pub fn render(frame: &mut Frame, app: &mut App) {
         ];
         let table = Table::new(rows, widths)
             .header(header)
-            .block(crate::theme::card("projects", false))
+            .block(crate::theme::card_plain())
             .row_highlight_style(crate::theme::selected());
         frame.render_stateful_widget(table, table_area, &mut app.table_state);
     }
@@ -204,11 +215,7 @@ fn render_build_cache(frame: &mut Frame, area: Rect, app: &App) {
         },
     };
     frame.render_widget(
-        Paragraph::new(line).block(
-            Block::default()
-                .borders(Borders::ALL)
-                .title("cargo build-cache (unstable)"),
-        ),
+        Paragraph::new(line).block(crate::theme::card("Build Cache")),
         area,
     );
 }
@@ -224,11 +231,7 @@ fn render_footer(frame: &mut Frame, area: Rect, app: &App) {
                 Span::raw(line),
                 Span::raw(" · enter done · esc done · ^U clear"),
             ]))
-            .block(
-                Block::default()
-                    .borders(Borders::ALL)
-                    .title("filter (regex)"),
-            ),
+            .block(crate::theme::card("filter (regex)")),
             area,
         );
         return;
@@ -250,7 +253,7 @@ fn render_footer(frame: &mut Frame, area: Rect, app: &App) {
             Span::raw(" · / filter · r rescan · q quit"),
             Span::raw(filter),
         ]))
-        .block(Block::default().borders(Borders::ALL)),
+        .block(crate::theme::card("keys")),
         area,
     );
 }
