@@ -3,10 +3,12 @@
 //! which still measure.
 
 mod cache;
+mod cargo_config;
 mod discover;
 mod measure;
 
 pub use cache::build_cache_path;
+pub use cargo_config::DiscoveredEntry;
 pub use discover::{ScanEvent, scan_stream};
 pub use measure::{Measurement, measure_target};
 
@@ -17,12 +19,15 @@ use std::{
 
 #[derive(Clone, Debug)]
 pub struct TargetEntry {
-    /// Project root (parent of `target/`).
+    /// Dir holding `Cargo.toml`.
     pub project_path: PathBuf,
-    /// Disk usage of `target/` in bytes, `du` semantics. `None` while
+    /// Measured artifact dir. Defaults to `project_path/target`; a
+    /// `build.target-dir` / `build.build-dir` config points elsewhere.
+    pub target_dir: PathBuf,
+    /// Disk usage of `target_dir` in bytes, `du` semantics. `None` while
     /// the size walk has not measured this entry yet.
     pub size: Option<u64>,
-    /// Newest mtime under `target/`, or `None` while pending or deleted.
+    /// Newest mtime under `target_dir`, or `None` while pending or deleted.
     pub last_modified: Option<SystemTime>,
 }
 

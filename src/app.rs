@@ -6,7 +6,7 @@ use std::{
 use ratatui::widgets::TableState;
 use regex::Regex;
 
-use crate::scan::{Measurement, TargetEntry, build_cache_path};
+use crate::scan::{DiscoveredEntry, Measurement, TargetEntry, build_cache_path};
 
 pub struct App {
     pub root: PathBuf,
@@ -58,14 +58,17 @@ impl App {
         }
     }
 
-    pub fn set_discovered(&mut self, mut projects: Vec<PathBuf>) {
-        projects.sort();
-        let mut entries: Vec<TargetEntry> = projects
+    pub fn set_discovered(&mut self, discovered: Vec<impl Into<DiscoveredEntry>>) {
+        let mut entries: Vec<TargetEntry> = discovered
             .into_iter()
-            .map(|project_path| TargetEntry {
-                project_path,
-                size: None,
-                last_modified: None,
+            .map(|item| {
+                let found: DiscoveredEntry = item.into();
+                TargetEntry {
+                    project_path: found.project_path,
+                    target_dir: found.target_dir,
+                    size: None,
+                    last_modified: None,
+                }
             })
             .collect();
         self.sort_entries(&mut entries);
@@ -141,7 +144,9 @@ impl App {
                 .iter()
                 .enumerate()
                 .filter(|(_, e)| {
-                    re.is_match(&e.project_name()) || re.is_match(&e.project_path.to_string_lossy())
+                    re.is_match(&e.project_name())
+                        || re.is_match(&e.project_path.to_string_lossy())
+                        || re.is_match(&e.target_dir.to_string_lossy())
                 })
                 .map(|(i, _)| i)
                 .collect(),
@@ -158,12 +163,9 @@ impl App {
             .selected()
             .and_then(|i| self.visible_indices().get(i).copied())
             .and_then(|i| self.entries.get(i))
-            .map(|e| e.project_path.clone());
+            .map(|e| e.target_dir.clone());
         for m in measurements {
-            if let Some(entry) = self
-                .entries
-                .iter_mut()
-                .find(|e| e.project_path.join("target") == m.target_dir)
+            if let Some(entry) = self.entries.iter_mut().find(|e| e.target_dir == m.target_dir)
             {
                 entry.size = Some(m.size);
                 entry.last_modified = m.last_modified;
@@ -179,6 +181,7 @@ impl App {
                 // The poller tracks it from the next reset.
                 self.build_cache = Some(TargetEntry {
                     project_path: m.target_dir.clone(),
+                    target_dir: m.target_dir.clone(),
                     size: Some(m.size),
                     last_modified: m.last_modified,
                 });
@@ -196,7 +199,7 @@ impl App {
             let visible = self.visible_indices();
             let pos = visible
                 .iter()
-                .position(|&i| self.entries.get(i).is_some_and(|e| e.project_path == path));
+                .position(|&i| self.entries.get(i).is_some_and(|e| e.target_dir == path));
             self.table_state
                 .select(pos.or_else(|| visible.first().map(|_| 0)));
         }
@@ -254,7 +257,7 @@ impl App {
         let sel = self.table_state.selected();
         let entry_idx = sel.and_then(|i| visible.get(i).copied());
         let Some(entry_idx) = entry_idx else { return };
-        let Some(project_path) = self.entries.get(entry_idx).map(|e| e.project_path.clone()) else {
+        let Some(target_dir) = self.entries.get(entry_idx).map(|e| e.target_dir.clone()) else {
             return;
         };
         // Neighbor by identity, so the resort below cannot lose it.
@@ -264,20 +267,19 @@ impl App {
             None => None,
         };
         let neighbor =
-            neighbor_idx.and_then(|i| self.entries.get(i).map(|e| e.project_path.clone()));
-        let target = project_path.join("target");
-        match std::fs::remove_dir_all(&target) {
+            neighbor_idx.and_then(|i| self.entries.get(i).map(|e| e.target_dir.clone()));
+        match std::fs::remove_dir_all(&target_dir) {
             Ok(()) => self.delete_error = None,
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => self.delete_error = None,
             Err(e) => {
-                self.delete_error = Some(format!("delete {}: {e}", target.display()));
+                self.delete_error = Some(format!("delete {}: {e}", target_dir.display()));
                 return;
             }
         }
         if let Some(entry) = self
             .entries
             .iter_mut()
-            .find(|e| e.project_path == project_path)
+            .find(|e| e.target_dir == target_dir)
         {
             entry.size = Some(0);
             entry.last_modified = None;
@@ -293,7 +295,7 @@ impl App {
         let pos = visible.iter().position(|&i| {
             self.entries
                 .get(i)
-                .is_some_and(|e| Some(&e.project_path) == neighbor.as_ref())
+                .is_some_and(|e| Some(&e.target_dir) == neighbor.as_ref())
         });
         self.table_state
             .select(pos.or_else(|| visible.first().map(|_| 0)));
@@ -316,18 +318,29 @@ impl App {
                 (Some(x), Some(y)) => y.cmp(&x),
                 (Some(_), None) => std::cmp::Ordering::Less,
                 (None, Some(_)) => std::cmp::Ordering::Greater,
-                (None, None) => a.project_path.cmp(&b.project_path),
+                (None, None) => a
+                    .project_path
+                    .cmp(&b.project_path)
+                    .then(a.target_dir.cmp(&b.target_dir)),
             }),
             SortKey::Modified => {
                 entries.sort_by(|a, b| match (&a.last_modified, &b.last_modified) {
                     // Pending and deleted dirs have no timestamp. They sink.
-                    (None, None) => a.project_path.cmp(&b.project_path),
+                    (None, None) => a
+                        .project_path
+                        .cmp(&b.project_path)
+                        .then(a.target_dir.cmp(&b.target_dir)),
                     (None, _) => std::cmp::Ordering::Greater,
                     (_, None) => std::cmp::Ordering::Less,
-                    (Some(x), Some(y)) => y.cmp(x).then(a.project_path.cmp(&b.project_path)),
+                    (Some(x), Some(y)) => y
+                        .cmp(x)
+                        .then(a.project_path.cmp(&b.project_path))
+                        .then(a.target_dir.cmp(&b.target_dir)),
                 })
             }
-            SortKey::Name => entries.sort_by(|a, b| a.project_path.cmp(&b.project_path)),
+            SortKey::Name => entries.sort_by(|a, b| {
+                a.project_path.cmp(&b.project_path).then(a.target_dir.cmp(&b.target_dir))
+            }),
         }
     }
 }

@@ -54,7 +54,7 @@ impl Poller {
         let mut dirs: Vec<(PathBuf, Option<u64>, Option<SystemTime>)> = app
             .entries
             .iter()
-            .map(|e| (e.project_path.join("target"), e.size, e.last_modified))
+            .map(|e| (e.target_dir.clone(), e.size, e.last_modified))
             .collect();
         // The build cache rides along: measured entry when present, else the
         // prospective path so its arrival is picked up like any change.

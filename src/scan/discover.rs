@@ -1,6 +1,10 @@
+//! Find Rust projects and measure their output dirs. Discovery walks in
+//! parallel and honors ignore files, except gitignored `target/` dirs,
+//! which still measure. Projects with `build.target-dir` /
+//! `build.build-dir` in `.cargo/config.toml` report those dirs instead of
 use std::{
     path::{Path, PathBuf},
-    sync::{Mutex, mpsc},
+    sync::{Arc, Mutex, RwLock, mpsc},
 };
 
 use ignore::{DirEntry, WalkBuilder, WalkState};
@@ -8,63 +12,102 @@ use rayon::prelude::*;
 
 use super::{
     TargetEntry,
+    cargo_config::{DiscoveredEntry, Resolver},
     measure::{Measurement, measure_target},
 };
 
 /// Scan progress messages, sent from the background thread.
 #[derive(Clone, Debug)]
 pub enum ScanEvent {
-    /// All project dirs found. Sizes are still unknown.
-    Discovered(Vec<PathBuf>),
-    /// One target dir measured.
+    /// All project/output pairs found. Sizes are still unknown.
+    Discovered(Vec<DiscoveredEntry>),
+    /// One output dir measured.
     Measured(Measurement),
     /// Size walk finished, with the build-cache measurement if present.
     Done { build_cache: Option<TargetEntry> },
 }
 
-/// Find project dirs without measuring them. Fast enough to show at once.
+/// Shared walk state: config cache, known output dirs, manifest dirs.
+struct Ctx {
+    resolver: Mutex<Resolver>,
+    /// Absolute output dirs to skip descending into. Best effort: entries
+    /// racing registration still walk once, results stay correct.
+    customs: RwLock<Vec<PathBuf>>,
+    manifests: Mutex<Vec<PathBuf>>,
+}
+
+/// Find project/output pairs without measuring them.
 #[tracing::instrument(skip_all, fields(root = %root.display()))]
-pub fn discover(root: &Path) -> Vec<PathBuf> {
-    let projects = Mutex::new(Vec::new());
+pub fn discover(root: &Path) -> Vec<DiscoveredEntry> {
+    let mut resolver = Resolver::new();
+    let customs = RwLock::new(resolver.outer_dirs(root).into_iter().filter(|d| d != root).collect());
+    let ctx = Arc::new(Ctx {
+        resolver: Mutex::new(resolver),
+        customs,
+        manifests: Mutex::new(Vec::new()),
+    });
     WalkBuilder::new(root)
         // Hidden dirs may hold projects; `.git` and `.cargo` are pruned below.
         .hidden(false)
         // Apply gitignores even outside a git checkout.
         .require_git(false)
         .threads(num_cpus::get().max(1))
-        .filter_entry(keep_entry)
+        .filter_entry({
+            let ctx = Arc::clone(&ctx);
+            move |entry| keep_entry(entry, &ctx)
+        })
         .build_parallel()
         .run(|| {
-            let projects = &projects;
-            Box::new(move |result: Result<DirEntry, ignore::Error>| visit_entry(result, projects))
+            let ctx = Arc::clone(&ctx);
+            Box::new(move |result: Result<DirEntry, ignore::Error>| visit_entry(result, &ctx))
         });
-    let projects = projects.into_inner().unwrap_or_default();
-    tracing::info!(count = projects.len(), "discovery complete");
-    projects
+    let Ctx { resolver, customs: _, manifests } =
+        Arc::try_unwrap(ctx).map_err(|_| ()).expect("walk done");
+    let manifests = manifests.into_inner().unwrap_or_default();
+    let mut resolver = resolver.into_inner().unwrap_or_else(|_| Resolver::new());
+    let mut entries = Vec::new();
+    for manifest in &manifests {
+        for dir in resolver.resolve(manifest) {
+            if is_target_dir(&dir) {
+                entries.push(DiscoveredEntry::new(manifest.clone(), dir));
+            }
+        }
+    }
+    entries.sort_by(|a, b| {
+        a.project_path.cmp(&b.project_path).then(a.target_dir.cmp(&b.target_dir))
+    });
+    tracing::info!(count = entries.len(), "discovery complete");
+    entries
 }
 
 /// Discover then measure, streaming progress over `tx`.
 pub fn scan_stream(root: &Path, tx: mpsc::Sender<ScanEvent>) {
-    let mut projects = discover(root);
-    projects.sort();
+    let projects = discover(root);
     if tx.send(ScanEvent::Discovered(projects.clone())).is_err() {
         return;
     }
-    projects
-        .par_iter()
-        .for_each_with(tx.clone(), |tx, project_path| {
-            let m = measure_target(&project_path.join("target"));
-            let _ = tx.send(ScanEvent::Measured(m));
-        });
+    projects.par_iter().for_each_with(tx.clone(), |tx, entry| {
+        let m = measure_target(&entry.target_dir);
+        let _ = tx.send(ScanEvent::Measured(m));
+    });
     let build_cache = super::cache::build_cache_entry();
     let _ = tx.send(ScanEvent::Done { build_cache });
 }
 
 /// Whether the walker yields an entry and descends into it.
-fn keep_entry(entry: &DirEntry) -> bool {
+fn keep_entry(entry: &DirEntry, ctx: &Ctx) -> bool {
     // Never prune the scan root itself.
     if entry.depth() == 0 {
         return true;
+    }
+    // Skip known cargo output dirs before paying to enumerate them. The
+    // check runs on dirs only: files under a kept tree are cheap, and a
+    // pruned parent hides its whole subtree.
+    if entry.file_type().is_some_and(|kind| kind.is_dir()) {
+        let path = entry.path();
+        if is_under_customs(ctx, path) && !is_manifest_dir(path) {
+            return false;
+        }
     }
     match entry.file_name().to_str() {
         Some(".git") | Some(".cargo") => false,
@@ -75,17 +118,22 @@ fn keep_entry(entry: &DirEntry) -> bool {
     }
 }
 
-/// Whether `dir` is a `target/` with a sibling `Cargo.toml`.
-fn is_project_target(dir: &Path) -> bool {
-    dir.parent()
-        .map(|parent| parent.join("Cargo.toml").is_file())
-        .unwrap_or(false)
+fn is_under_customs(ctx: &Ctx, path: &Path) -> bool {
+    ctx.customs.read().is_ok_and(|customs| {
+        customs.iter().any(|root| path != *root && path.starts_with(root))
+    })
 }
 
-fn visit_entry(
-    result: Result<DirEntry, ignore::Error>,
-    projects: &Mutex<Vec<PathBuf>>,
-) -> WalkState {
+fn is_manifest_dir(dir: &Path) -> bool {
+    dir.join("Cargo.toml").is_file()
+}
+
+/// Whether `dir` is a `target/` with a sibling `Cargo.toml`.
+fn is_project_target(dir: &Path) -> bool {
+    dir.parent().map(|parent| parent.join("Cargo.toml").is_file()).unwrap_or(false)
+}
+
+fn visit_entry(result: Result<DirEntry, ignore::Error>, ctx: &Ctx) -> WalkState {
     let Ok(entry) = result else {
         return WalkState::Continue;
     };
@@ -94,16 +142,28 @@ fn visit_entry(
         return WalkState::Continue;
     }
     let dir = entry.path();
-    if dir.join("Cargo.toml").is_file()
-        && is_target_dir(&dir.join("target"))
-        && let Ok(mut projects) = projects.lock()
-    {
-        projects.push(dir.to_path_buf());
+    if !is_manifest_dir(dir) {
+        return WalkState::Continue;
+    }
+    // Register this project's output dirs so the walker skips them.
+    // Lock order is always resolver then customs.
+    if let Ok(mut resolver) = ctx.resolver.lock() {
+        let dirs = resolver.resolve(dir);
+        if let Ok(mut customs) = ctx.customs.write() {
+            for dir in dirs {
+                if !customs.contains(&dir) {
+                    customs.push(dir);
+                }
+            }
+        }
+    }
+    if let Ok(mut manifests) = ctx.manifests.lock() {
+        manifests.push(dir.to_path_buf());
     }
     WalkState::Continue
 }
 
-/// Whether `path` is a real `target/` dir. Symlinks never count.
+/// Whether `path` is a real output dir. Symlinks never count.
 fn is_target_dir(path: &Path) -> bool {
     std::fs::symlink_metadata(path).is_ok_and(|md| md.is_dir())
 }
@@ -131,17 +191,95 @@ mod tests {
         root
     }
 
+    fn projects_of(entries: &[DiscoveredEntry]) -> Vec<PathBuf> {
+        let mut projects: Vec<PathBuf> = entries.iter().map(|e| e.project_path.clone()).collect();
+        projects.sort();
+        projects
+    }
+
     #[test]
     fn finds_only_projects_with_cargo_toml_and_target() {
         let root = setup_tree("find");
-        let mut projects = discover(&root);
-        projects.sort();
+        let projects = discover(&root);
 
-        assert_eq!(projects, vec![root.join("proj-a")]);
+        assert_eq!(projects_of(&projects), vec![root.join("proj-a")]);
+        assert_eq!(projects[0].target_dir, root.join("proj-a/target"));
         // Disk usage, not apparent length: blocks for the file plus its dirs.
         let m = measure_target(&root.join("proj-a/target"));
         assert!(m.size >= 5);
         assert!(m.last_modified.is_some_and(|t| t > SystemTime::UNIX_EPOCH));
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn custom_target_dir_found_without_local_target() {
+        let root = std::env::temp_dir().join("targeter-test-custom-target");
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(root.join("proj/.cargo")).unwrap();
+        fs::write(root.join("proj/Cargo.toml"), "[package]\n").unwrap();
+        fs::write(root.join("proj/.cargo/config.toml"), "[build]\ntarget-dir = \"../shared-out\"\n").unwrap();
+        fs::create_dir_all(root.join("shared-out/debug")).unwrap();
+        fs::write(root.join("shared-out/debug/blob.bin"), "hello").unwrap();
+
+        let projects = discover(&root);
+        assert_eq!(projects.len(), 1);
+        assert_eq!(projects[0].project_path, root.join("proj"));
+        assert_eq!(projects[0].target_dir, root.join("shared-out"));
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn build_dir_adds_a_second_row() {
+        let root = std::env::temp_dir().join("targeter-test-build-dir");
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(root.join("proj/.cargo")).unwrap();
+        fs::write(root.join("proj/Cargo.toml"), "[package]\n").unwrap();
+        fs::write(
+            root.join("proj/.cargo/config.toml"),
+            "[build]\ntarget-dir = \"../tout\"\nbuild-dir = \"../bout\"\n",
+        )
+        .unwrap();
+        fs::create_dir_all(root.join("tout")).unwrap();
+        fs::write(root.join("tout/blob.bin"), "hello").unwrap();
+        fs::create_dir_all(root.join("bout")).unwrap();
+        fs::write(root.join("bout/blob.bin"), "world!").unwrap();
+
+        let mut projects = discover(&root);
+        projects.sort_by(|a, b| a.target_dir.cmp(&b.target_dir));
+        assert_eq!(
+            projects.iter().map(|e| e.target_dir.clone()).collect::<Vec<_>>(),
+            vec![root.join("bout"), root.join("tout")]
+        );
+        assert!(projects.iter().all(|e| e.project_path == root.join("proj")));
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn stale_default_target_still_listed_next_to_custom() {
+        let root = std::env::temp_dir().join("targeter-test-stale-default");
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(root.join("proj/.cargo")).unwrap();
+        fs::write(root.join("proj/Cargo.toml"), "[package]\n").unwrap();
+        fs::write(root.join("proj/.cargo/config.toml"), "[build]\ntarget-dir = \"/nowhere-custom-xyz\"\n").unwrap();
+        // Leftover from before the config moved: still cleanable.
+        fs::create_dir_all(root.join("proj/target")).unwrap();
+        fs::write(root.join("proj/target/blob.bin"), "hello").unwrap();
+
+        let projects = discover(&root);
+        assert_eq!(projects.len(), 1);
+        assert_eq!(projects[0].target_dir, root.join("proj/target"));
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn missing_custom_dir_reports_nothing() {
+        let root = std::env::temp_dir().join("targeter-test-missing-custom");
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(root.join("proj/.cargo")).unwrap();
+        fs::write(root.join("proj/Cargo.toml"), "[package]\n").unwrap();
+        fs::write(root.join("proj/.cargo/config.toml"), "[build]\ntarget-dir = \"/nowhere-custom-xyz\"\n").unwrap();
+
+        assert!(discover(&root).is_empty());
         let _ = fs::remove_dir_all(&root);
     }
 
@@ -155,16 +293,13 @@ mod tests {
         fs::write(root.join("workspace/member/target/blob.bin"), "xy").unwrap();
 
         let projects = discover(&root);
-        assert_eq!(projects, vec![root.join("workspace/member")]);
+        assert_eq!(projects_of(&projects), vec![root.join("workspace/member")]);
         // Sanity: fixture mtime is recent (within the last hour).
         let mtime = measure_target(&root.join("workspace/member/target"))
             .last_modified
             .expect("target exists");
         assert!(
-            SystemTime::now()
-                .duration_since(mtime)
-                .unwrap_or(Duration::MAX)
-                < Duration::from_secs(3600)
+            SystemTime::now().duration_since(mtime).unwrap_or(Duration::MAX) < Duration::from_secs(3600)
         );
         let _ = fs::remove_dir_all(&root);
     }
@@ -185,7 +320,7 @@ mod tests {
         fs::write(root.join("ignored/ghost/target/blob.bin"), "hello").unwrap();
 
         let projects = discover(&root);
-        assert_eq!(projects, vec![root.join("proj-b")]);
+        assert_eq!(projects_of(&projects), vec![root.join("proj-b")]);
         let m = measure_target(&root.join("proj-b/target"));
         assert!(m.size >= 5);
         let _ = fs::remove_dir_all(&root);
@@ -202,7 +337,7 @@ mod tests {
         }
         assert!(matches!(
             &events[0],
-            ScanEvent::Discovered(projects) if projects == &vec![root.join("proj-a")]
+            ScanEvent::Discovered(projects) if projects_of(projects) == vec![root.join("proj-a")]
         ));
         assert!(events.iter().any(|event| matches!(
             event,
