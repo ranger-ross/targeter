@@ -28,7 +28,7 @@ pub fn build_cache_entry_at(path: &Path) -> Option<TargetEntry> {
     let (size, last_modified) = recursive_scan_target(path);
     Some(TargetEntry {
         project_path: path.to_path_buf(),
-        size,
+        size: Some(size),
         last_modified,
     })
 }
@@ -48,7 +48,7 @@ mod tests {
 
         let entry = build_cache_entry_at(&root.join("build-cache")).expect("cache dir exists");
         assert_eq!(entry.project_path, root.join("build-cache"));
-        assert!(entry.size >= 8);
+        assert!(entry.size.is_some_and(|s| s >= 8));
         assert!(
             entry
                 .last_modified

@@ -6,8 +6,8 @@ mod cache;
 mod discover;
 mod measure;
 
-pub use cache::{build_cache_entry, build_cache_path};
-pub use discover::scan;
+pub use cache::build_cache_path;
+pub use discover::{ScanEvent, scan_stream};
 pub use measure::{Measurement, measure_target};
 
 use std::{
@@ -19,9 +19,10 @@ use std::{
 pub struct TargetEntry {
     /// Project root (parent of `target/`).
     pub project_path: PathBuf,
-    /// Disk usage of `target/` in bytes, `du` semantics.
-    pub size: u64,
-    /// Newest mtime under `target/`, or `None` while deleted.
+    /// Disk usage of `target/` in bytes, `du` semantics. `None` while
+    /// the size walk has not measured this entry yet.
+    pub size: Option<u64>,
+    /// Newest mtime under `target/`, or `None` while pending or deleted.
     pub last_modified: Option<SystemTime>,
 }
 

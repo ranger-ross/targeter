@@ -38,7 +38,7 @@ pub fn render(frame: &mut Frame, app: &mut App) {
     let visible_size: u64 = visible
         .iter()
         .filter_map(|&i| app.entries.get(i))
-        .map(|e| e.size)
+        .filter_map(|e| e.size)
         .sum();
     let counts = if app.filter_regex.is_some() {
         format!(
@@ -72,7 +72,7 @@ pub fn render(frame: &mut Frame, app: &mut App) {
         render_build_cache(frame, cache_area, app);
     }
 
-    if app.scanning {
+    if app.scanning && app.entries.is_empty() {
         frame.render_widget(
             Paragraph::new(
                 crate::ui::loading::Loading::new(
@@ -103,8 +103,8 @@ pub fn render(frame: &mut Frame, app: &mut App) {
         let rows = visible.iter().filter_map(|&i| app.entries.get(i)).map(|e| {
             Row::new([
                 Cell::from(e.project_name()),
-                Cell::from(format_size(e.size)),
-                Cell::from(format_modified_opt(e.last_modified)),
+                Cell::from(format_size_opt(e.size)),
+                Cell::from(format_modified_entry(e)),
                 Cell::from(display_path(&e.project_path)),
             ])
             .height(1)
@@ -123,6 +123,11 @@ pub fn render(frame: &mut Frame, app: &mut App) {
     }
 
     render_footer(frame, footer_area, app);
+}
+
+/// Binary-unit sizes matching `du -h`. Pending entries read as `-`.
+fn format_size_opt(size: Option<u64>) -> String {
+    size.map_or_else(|| "-".to_string(), format_size)
 }
 
 /// Binary-unit sizes matching `du -h`.
@@ -184,6 +189,14 @@ fn format_age(age: std::time::Duration) -> String {
     timeago::Formatter::new().convert(age)
 }
 
+/// Timestamp for display; pending entries read as `-`, deleted as "deleted".
+fn format_modified_entry(entry: &crate::scan::TargetEntry) -> String {
+    if entry.size.is_none() {
+        return "-".to_string();
+    }
+    format_modified_opt(entry.last_modified)
+}
+
 /// Timestamp for display; deleted dirs read as "deleted".
 fn format_modified_opt(last_modified: Option<std::time::SystemTime>) -> String {
     match last_modified {
@@ -196,8 +209,8 @@ fn render_build_cache(frame: &mut Frame, area: Rect, app: &App) {
     let line = match &app.build_cache {
         Some(entry) => format!(
             "{} ({})  {}",
-            format_size(entry.size),
-            format_modified_opt(entry.last_modified),
+            format_size_opt(entry.size),
+            format_modified_entry(entry),
             display_path(&entry.project_path)
         ),
         None if app.scanning => "Measuring…".to_string(),
@@ -293,5 +306,18 @@ mod tests {
             format_modified_opt(Some(std::time::SystemTime::now())),
             "now"
         );
+    }
+
+    #[test]
+    fn pending_entries_read_as_dash() {
+        use crate::scan::TargetEntry;
+        assert_eq!(format_size_opt(None), "-");
+        assert_eq!(format_size_opt(Some(0)), "0 B");
+        let pending = TargetEntry {
+            project_path: std::path::PathBuf::from("proj-a"),
+            size: None,
+            last_modified: None,
+        };
+        assert_eq!(format_modified_entry(&pending), "-");
     }
 }

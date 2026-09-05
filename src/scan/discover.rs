@@ -1,18 +1,30 @@
 use std::{
     path::{Path, PathBuf},
-    sync::Mutex,
+    sync::{Mutex, mpsc},
 };
 
 use ignore::{DirEntry, WalkBuilder, WalkState};
 use rayon::prelude::*;
 
-use super::{TargetEntry, measure::recursive_scan_target};
+use super::{
+    TargetEntry,
+    measure::{Measurement, measure_target},
+};
 
-/// Scan `root` recursively for cargo projects with a `target/` dir.
-///
-/// A project holds both `Cargo.toml` and a real `target/` subdir.
+/// Scan progress messages, sent from the background thread.
+#[derive(Clone, Debug)]
+pub enum ScanEvent {
+    /// All project dirs found. Sizes are still unknown.
+    Discovered(Vec<PathBuf>),
+    /// One target dir measured.
+    Measured(Measurement),
+    /// Size walk finished, with the build-cache measurement if present.
+    Done { build_cache: Option<TargetEntry> },
+}
+
+/// Find project dirs without measuring them. Fast enough to show at once.
 #[tracing::instrument(skip_all, fields(root = %root.display()))]
-pub fn scan(root: &Path) -> Vec<TargetEntry> {
+pub fn discover(root: &Path) -> Vec<PathBuf> {
     let projects = Mutex::new(Vec::new());
     WalkBuilder::new(root)
         // Hidden dirs may hold projects; `.git` and `.cargo` are pruned below.
@@ -28,24 +40,22 @@ pub fn scan(root: &Path) -> Vec<TargetEntry> {
         });
     let projects = projects.into_inner().unwrap_or_default();
     tracing::info!(count = projects.len(), "discovery complete");
+    projects
+}
 
-    // Targets share one rayon pool. Nested in the parallel walk this feeds
-    // a single work queue, so a slow target cannot stall the rest.
-    let mut entries: Vec<TargetEntry> = projects
-        .par_iter()
-        .map(|project_path| {
-            let (size, last_modified) = recursive_scan_target(project_path.join("target"));
-            TargetEntry {
-                project_path: project_path.clone(),
-                size,
-                last_modified,
-            }
-        })
-        .collect();
-
-    // Biggest first, most useful for a disk monitor.
-    entries.sort_by_key(|a| std::cmp::Reverse(a.size));
-    entries
+/// Discover then measure, streaming progress over `tx`.
+pub fn scan_stream(root: &Path, tx: mpsc::Sender<ScanEvent>) {
+    let mut projects = discover(root);
+    projects.sort();
+    if tx.send(ScanEvent::Discovered(projects.clone())).is_err() {
+        return;
+    }
+    projects.par_iter().for_each_with(tx.clone(), |tx, project_path| {
+        let m = measure_target(&project_path.join("target"));
+        let _ = tx.send(ScanEvent::Measured(m));
+    });
+    let build_cache = super::cache::build_cache_entry();
+    let _ = tx.send(ScanEvent::Done { build_cache });
 }
 
 /// Whether the walker yields an entry and descends into it.
@@ -122,16 +132,15 @@ mod tests {
     #[test]
     fn finds_only_projects_with_cargo_toml_and_target() {
         let root = setup_tree("find");
-        let mut entries = scan(&root);
-        entries.sort_by(|a, b| a.project_path.cmp(&b.project_path));
+        let mut projects = discover(&root);
+        projects.sort();
 
-        assert_eq!(entries.len(), 1);
-        assert_eq!(entries[0].project_path, root.join("proj-a"));
+        assert_eq!(projects, vec![root.join("proj-a")]);
         // Disk usage, not apparent length: blocks for the file plus its dirs.
-        assert!(entries[0].size >= 5);
+        let m = measure_target(&root.join("proj-a/target"));
+        assert!(m.size >= 5);
         assert!(
-            entries[0]
-                .last_modified
+            m.last_modified
                 .is_some_and(|t| t > SystemTime::UNIX_EPOCH)
         );
         let _ = fs::remove_dir_all(&root);
@@ -146,11 +155,12 @@ mod tests {
         fs::write(root.join("workspace/member/Cargo.toml"), "[package]\n").unwrap();
         fs::write(root.join("workspace/member/target/blob.bin"), "xy").unwrap();
 
-        let entries = scan(&root);
-        assert_eq!(entries.len(), 1);
-        assert_eq!(entries[0].project_path, root.join("workspace/member"));
+        let projects = discover(&root);
+        assert_eq!(projects, vec![root.join("workspace/member")]);
         // Sanity: fixture mtime is recent (within the last hour).
-        let mtime = entries[0].last_modified.expect("target exists");
+        let mtime = measure_target(&root.join("workspace/member/target"))
+            .last_modified
+            .expect("target exists");
         assert!(
             SystemTime::now()
                 .duration_since(mtime)
@@ -175,10 +185,32 @@ mod tests {
         fs::write(root.join("ignored/ghost/Cargo.toml"), "[package]\n").unwrap();
         fs::write(root.join("ignored/ghost/target/blob.bin"), "hello").unwrap();
 
-        let entries = scan(&root);
-        assert_eq!(entries.len(), 1);
-        assert_eq!(entries[0].project_path, root.join("proj-b"));
-        assert!(entries[0].size >= 5);
+        let projects = discover(&root);
+        assert_eq!(projects, vec![root.join("proj-b")]);
+        let m = measure_target(&root.join("proj-b/target"));
+        assert!(m.size >= 5);
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn stream_delivers_discovery_before_measurements() {
+        let root = setup_tree("stream");
+        let (tx, rx) = std::sync::mpsc::channel();
+        scan_stream(&root, tx);
+        let mut events = Vec::new();
+        while let Ok(event) = rx.try_recv() {
+            events.push(event);
+        }
+        assert!(matches!(
+            &events[0],
+            ScanEvent::Discovered(projects) if projects == &vec![root.join("proj-a")]
+        ));
+        assert!(events.iter().any(|event| matches!(
+            event,
+            ScanEvent::Measured(m)
+                if m.target_dir == root.join("proj-a/target") && m.size >= 5
+        )));
+        assert!(matches!(events.last(), Some(ScanEvent::Done { .. })));
         let _ = fs::remove_dir_all(&root);
     }
 }

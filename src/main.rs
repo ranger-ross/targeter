@@ -16,7 +16,7 @@ use ratatui::backend::CrosstermBackend;
 use app::App;
 use args::Args;
 use poll::Poller;
-use scan::{TargetEntry, resolve_root};
+use scan::resolve_root;
 use ui::input::{Action, handle_key};
 
 mod app;
@@ -63,13 +63,28 @@ fn run(terminal: &mut Terminal<CrosstermBackend<std::io::Stdout>>, root: PathBuf
             .draw(|frame| ui::render(frame, &mut app))
             .wrap_err("rendering frame")?;
 
-        // Pick up a finished background scan without blocking the UI.
-        if let Some(rx) = scan_rx.as_ref()
-            && let Ok((entries, build_cache)) = rx.try_recv()
-        {
-            app.set_entries(entries, build_cache);
-            scan_rx = None;
-            poller.reset(&app);
+        // Drain scan progress without blocking the UI. Discovery shows
+        // rows at once; measurements fill sizes as they finish.
+        if let Some(rx) = scan_rx.as_ref() {
+            let mut done = false;
+            while let Ok(event) = rx.try_recv() {
+                match event {
+                    scan::ScanEvent::Discovered(projects) => {
+                        app.set_discovered(projects);
+                    }
+                    scan::ScanEvent::Measured(m) => {
+                        app.apply_measurements(&[m]);
+                    }
+                    scan::ScanEvent::Done { build_cache } => {
+                        app.finish_scan(build_cache);
+                        poller.reset(&app);
+                        done = true;
+                    }
+                }
+            }
+            if done {
+                scan_rx = None;
+            }
         }
 
         poller.poll(&mut app);
@@ -96,15 +111,13 @@ fn run(terminal: &mut Terminal<CrosstermBackend<std::io::Stdout>>, root: PathBuf
     }
 }
 
-/// Run the recursive scan off the UI thread so the TUI stays responsive.
-/// The build-cache measurement rides along so the UI gets both at once.
-fn spawn_scan(root: &Path) -> Option<mpsc::Receiver<(Vec<TargetEntry>, Option<TargetEntry>)>> {
+/// Run discovery plus the size walk off the UI thread. Discovery ships
+/// first so rows appear at once; sizes stream in after.
+fn spawn_scan(root: &Path) -> Option<mpsc::Receiver<scan::ScanEvent>> {
     let root = root.to_path_buf();
     let (tx, rx) = mpsc::channel();
     std::thread::spawn(move || {
-        let entries = scan::scan(&root);
-        let build_cache = scan::build_cache_entry();
-        let _ = tx.send((entries, build_cache));
+        scan::scan_stream(&root, tx);
     });
     Some(rx)
 }

@@ -53,7 +53,7 @@ struct Tracked {
     target_dir: PathBuf,
     tier: Tier,
     next_due: Instant,
-    last_size: u64,
+    last_size: Option<u64>,
     last_modified: Option<SystemTime>,
 }
 
@@ -84,7 +84,7 @@ impl Poller {
     fn reset_at(&mut self, app: &App, now: Instant) {
         while self.measure_rx.try_recv().is_ok() {}
         self.in_flight = false;
-        let mut dirs: Vec<(PathBuf, u64, Option<SystemTime>)> = app
+        let mut dirs: Vec<(PathBuf, Option<u64>, Option<SystemTime>)> = app
             .entries
             .iter()
             .map(|e| (e.project_path.join("target"), e.size, e.last_modified))
@@ -95,7 +95,7 @@ impl Poller {
             Some(cache) => dirs.push((cache.project_path.clone(), cache.size, cache.last_modified)),
             None => {
                 if let Some(path) = &app.build_cache_path {
-                    dirs.push((path.clone(), 0, None));
+                    dirs.push((path.clone(), None, None));
                 }
             }
         }
@@ -169,9 +169,9 @@ impl Poller {
                 t.next_due = now + t.tier.interval();
                 continue;
             }
-            if m.size != t.last_size || m.last_modified != t.last_modified {
+            if Some(m.size) != t.last_size || m.last_modified != t.last_modified {
                 t.tier = Tier::Active;
-                t.last_size = m.size;
+                t.last_size = Some(m.size);
                 t.last_modified = m.last_modified;
             } else {
                 t.tier = match t.tier {
@@ -197,7 +197,6 @@ impl Default for Poller {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::scan::TargetEntry;
 
     /// Backing dirs for cases. Created (never written), so live dirs
     /// measure `Some` and the never-created `proj-gone` measures `None`.
@@ -211,17 +210,13 @@ mod tests {
 
     fn app_with_targets() -> App {
         let root = test_root();
-        let mut entries = Vec::new();
-        for (proj, size) in [("proj-a", 100u64), ("proj-b", 50u64)] {
+        for proj in ["proj-a", "proj-b"] {
             std::fs::create_dir_all(root.join(proj).join("target")).unwrap();
-            entries.push(TargetEntry {
-                project_path: root.join(proj),
-                size,
-                last_modified: Some(SystemTime::UNIX_EPOCH),
-            });
         }
         let mut app = App::new(root);
-        app.set_entries(entries, None);
+        app.set_discovered(vec![test_root().join("proj-a"), test_root().join("proj-b")]);
+        app.apply_measurements(&[measurement("proj-a", 100), measurement("proj-b", 50)]);
+        app.finish_scan(None);
         // No build-cache path in tests: only the two targets are tracked.
         app.build_cache_path = None;
         app
@@ -337,14 +332,9 @@ mod tests {
         // `proj-gone` is tracked but never created on disk.
         let root = test_root();
         let mut app = App::new(root.clone());
-        app.set_entries(
-            vec![TargetEntry {
-                project_path: root.join("proj-gone"),
-                size: 100,
-                last_modified: Some(SystemTime::UNIX_EPOCH),
-            }],
-            None,
-        );
+        app.set_discovered(vec![root.join("proj-gone")]);
+        app.apply_measurements(&[measurement("proj-gone", 100)]);
+        app.finish_scan(None);
         app.build_cache_path = None;
         let mut poller = Poller::new();
         let now = Instant::now();
@@ -352,7 +342,7 @@ mod tests {
         // Deletion promotes to Active so a rebuild is caught fast, and
         // the row zeroes with no timestamp.
         poller.apply(vec![missing_measurement("proj-gone")], &mut app, now);
-        assert_eq!(app.entries[0].size, 0);
+        assert_eq!(app.entries[0].size, Some(0));
         assert!(app.entries[0].last_modified.is_none());
         assert_eq!(tier_of(&poller, "proj-gone"), Tier::Active);
         // Still gone: stays Active on the fast cadence, baseline kept.
