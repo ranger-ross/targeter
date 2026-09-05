@@ -86,9 +86,9 @@ pub fn discover(root: &Path) -> Vec<DiscoveredEntry> {
     let mut resolver = resolver.into_inner().unwrap_or_else(|_| Resolver::new());
     let mut entries = Vec::new();
     for manifest in &manifests {
-        for dir in resolver.resolve(manifest) {
-            if is_target_dir(&dir) {
-                entries.push(DiscoveredEntry::new(manifest.clone(), dir));
+        for entry in resolver.resolve(manifest) {
+            if is_target_dir(&entry.target_dir) {
+                entries.push(entry);
             }
         }
     }
@@ -184,6 +184,7 @@ fn visit_entry(result: Result<DirEntry, ignore::Error>, ctx: &Ctx) -> WalkState 
                 resolver
                     .resolve(dir)
                     .into_iter()
+                    .map(|e| e.target_dir)
                     .filter(|d| *d != default_target)
                     .collect()
             })
@@ -296,6 +297,9 @@ mod tests {
             vec![root.join("bout"), root.join("tout")]
         );
         assert!(projects.iter().all(|e| e.project_path == root.join("proj")));
+        let kinds: Vec<super::super::OutputKind> = projects.iter().map(|e| e.kind).collect();
+        assert!(kinds.contains(&super::super::OutputKind::Target));
+        assert!(kinds.contains(&super::super::OutputKind::Build));
         let _ = fs::remove_dir_all(&root);
     }
 

@@ -47,7 +47,7 @@ impl Resolver {
     /// probe. In-memory overrides (`$CARGO_HOME`, env) still apply. A project
     /// with both a local `target/` and a file-configured custom dir reports
     /// the local dir only.
-    pub fn resolve(&mut self, manifest_dir: &Path) -> Vec<PathBuf> {
+    pub fn resolve(&mut self, manifest_dir: &Path) -> Vec<DiscoveredEntry> {
         let default_target = manifest_dir.join("target");
         // One probe, symlinks excluded like discovery's `is_target_dir`.
         let has_default = std::fs::symlink_metadata(&default_target).is_ok_and(|md| md.is_dir());
@@ -84,18 +84,27 @@ impl Resolver {
                 }
             }
         }
-        let mut out = vec![default_target.clone()];
-        let push = |out: &mut Vec<PathBuf>, dir: PathBuf| {
-            if !out.iter().any(|d| d == &dir) {
-                out.push(dir);
+        let manifest = manifest_dir.to_path_buf();
+        let mut out = vec![DiscoveredEntry::new(
+            manifest.clone(),
+            default_target.clone(),
+            OutputKind::Target,
+        )];
+        let push = |out: &mut Vec<DiscoveredEntry>, dir: PathBuf, kind: OutputKind| {
+            if !out.iter().any(|d| d.target_dir == dir) {
+                out.push(DiscoveredEntry::new(manifest.clone(), dir, kind));
             }
         };
         if let Some(raw) = self.env_target.clone() {
-            push(&mut out, raw);
+            push(&mut out, raw, OutputKind::Target);
         } else if let Some(raw) = target
             && let Some(base) = target_base
         {
-            push(&mut out, absolutize(&base, Path::new(&raw)));
+            push(
+                &mut out,
+                absolutize(&base, Path::new(&raw)),
+                OutputKind::Target,
+            );
         }
         // `build.build-dir` defaults to the target dir, so only an explicit
         // value that templates cleanly and lands elsewhere adds a row.
@@ -106,7 +115,7 @@ impl Resolver {
             })
         });
         if let Some(dir) = build {
-            push(&mut out, dir);
+            push(&mut out, dir, OutputKind::Build);
         }
         out
     }
@@ -115,6 +124,9 @@ impl Resolver {
     /// Best effort: deeper configs may still override these per project.
     pub fn outer_dirs(&mut self, dir: &Path) -> Vec<PathBuf> {
         self.resolve(dir)
+            .into_iter()
+            .map(|e| e.target_dir)
+            .collect()
     }
 
     fn config_for(&mut self, dir: &Path) -> Option<&ConfigFile> {
@@ -149,6 +161,16 @@ struct ConfigFile {
     build_dir: Option<String>,
 }
 
+/// Which config key produced an output dir.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum OutputKind {
+    /// Default `target/` or `build.target-dir`.
+    #[default]
+    Target,
+    /// `build.build-dir`.
+    Build,
+}
+
 /// One project/output pair found by discovery.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct DiscoveredEntry {
@@ -156,13 +178,16 @@ pub struct DiscoveredEntry {
     pub project_path: PathBuf,
     /// Artifact dir: default `target/` or a configured dir.
     pub target_dir: PathBuf,
+    /// Whether this dir came from `target-dir` or `build-dir`.
+    pub kind: OutputKind,
 }
 
 impl DiscoveredEntry {
-    pub fn new(project_path: PathBuf, target_dir: PathBuf) -> Self {
+    pub fn new(project_path: PathBuf, target_dir: PathBuf, kind: OutputKind) -> Self {
         Self {
             project_path,
             target_dir,
+            kind,
         }
     }
 }
@@ -174,6 +199,7 @@ impl From<PathBuf> for DiscoveredEntry {
         Self {
             project_path,
             target_dir,
+            kind: OutputKind::Target,
         }
     }
 }
@@ -413,8 +439,14 @@ mod tests {
         let mut r = Resolver::new();
         // Config above the temp root cannot interfere: resolve only the leaf.
         let dirs = r.resolve(&root.join("proj"));
-        assert!(dirs.contains(&normalize(&root.join("shared-target"))));
-        assert!(dirs.contains(&root.join("proj/target")));
+        assert!(
+            dirs.iter()
+                .any(|e| e.target_dir == normalize(&root.join("shared-target")))
+        );
+        assert!(
+            dirs.iter()
+                .any(|e| e.target_dir == root.join("proj/target"))
+        );
         let _ = fs::remove_dir_all(&root);
     }
 
@@ -435,8 +467,8 @@ mod tests {
         .unwrap();
         let mut r = Resolver::new();
         let dirs = r.resolve(&root.join("proj"));
-        assert!(dirs.contains(&PathBuf::from("/inner")));
-        assert!(!dirs.contains(&PathBuf::from("/outer")));
+        assert!(dirs.iter().any(|e| e.target_dir == Path::new("/inner")));
+        assert!(!dirs.iter().any(|e| e.target_dir == Path::new("/outer")));
         let _ = fs::remove_dir_all(&root);
     }
 
@@ -456,8 +488,8 @@ mod tests {
         .unwrap();
         let mut r = Resolver::new();
         let dirs = r.resolve(&root.join("proj"));
-        assert!(dirs.contains(&PathBuf::from("/bare")));
-        assert!(!dirs.contains(&PathBuf::from("/toml")));
+        assert!(dirs.iter().any(|e| e.target_dir == Path::new("/bare")));
+        assert!(!dirs.iter().any(|e| e.target_dir == Path::new("/toml")));
         assert_eq!(dirs.len(), 2, "hash template adds no row: {dirs:?}");
         let _ = fs::remove_dir_all(&root);
     }
@@ -473,7 +505,7 @@ mod tests {
         .unwrap();
         let mut r = Resolver::new();
         let dirs = r.resolve(&root.join("proj"));
-        assert!(dirs.contains(&root.join("proj/bdir")));
+        assert!(dirs.iter().any(|e| e.target_dir == root.join("proj/bdir")));
         let _ = fs::remove_dir_all(&root);
     }
 
@@ -492,7 +524,7 @@ mod tests {
         let mut r = Resolver::new();
         for proj in ["a", "b", "c"] {
             let dirs = r.resolve(&root.join(proj));
-            assert!(dirs.contains(&PathBuf::from("/shared")));
+            assert!(dirs.iter().any(|e| e.target_dir == Path::new("/shared")));
         }
         assert_eq!(r.cached_files(), 1, "one distinct .cargo dir parsed once");
         let _ = fs::remove_dir_all(&root);
@@ -510,8 +542,15 @@ mod tests {
         .unwrap();
         let mut r = Resolver::new();
         let dirs = r.resolve(&root.join("proj"));
-        assert!(dirs.contains(&root.join("proj/target")));
-        assert!(!dirs.contains(&PathBuf::from("/custom-fast-xyz")));
+        assert!(
+            dirs.iter()
+                .any(|e| e.target_dir == root.join("proj/target"))
+        );
+        assert!(
+            !dirs
+                .iter()
+                .any(|e| e.target_dir == Path::new("/custom-fast-xyz"))
+        );
         assert_eq!(r.cached_files(), 0, "default target avoids config I/O");
         let _ = fs::remove_dir_all(&root);
     }

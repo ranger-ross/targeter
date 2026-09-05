@@ -8,7 +8,7 @@ mod discover;
 mod measure;
 
 pub use cache::build_cache_path;
-pub use cargo_config::DiscoveredEntry;
+pub use cargo_config::{DiscoveredEntry, OutputKind};
 pub use discover::{ScanEvent, scan_stream};
 pub use measure::{Measurement, measure_target};
 
@@ -24,6 +24,8 @@ pub struct TargetEntry {
     /// Measured artifact dir. Defaults to `project_path/target`; a
     /// `build.target-dir` / `build.build-dir` config points elsewhere.
     pub target_dir: PathBuf,
+    /// Whether this dir came from `target-dir` or `build-dir`.
+    pub kind: OutputKind,
     /// Disk usage of `target_dir` in bytes, `du` semantics. `None` while
     /// the size walk has not measured this entry yet.
     pub size: Option<u64>,

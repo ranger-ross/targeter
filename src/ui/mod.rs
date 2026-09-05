@@ -112,14 +112,16 @@ pub fn render(frame: &mut Frame, app: &mut App) {
 
         let rows = visible.iter().enumerate().filter_map(|(pos, &i)| {
             app.entries.get(i).map(|e| {
-                let name = if Some(pos) == selected {
-                    Text::styled(
-                        e.project_name(),
-                        Style::default().add_modifier(Modifier::BOLD),
-                    )
+                let base = if Some(pos) == selected {
+                    Style::default().add_modifier(Modifier::BOLD)
                 } else {
-                    Text::from(e.project_name())
+                    Style::default()
                 };
+                let mut spans = vec![Span::styled(e.project_name(), base)];
+                if let Some((label, color)) = output_suffix(e, &app.entries) {
+                    spans.push(Span::styled(label, Style::default().fg(color)));
+                }
+                let name = Text::from(Line::from(spans));
                 let mut size_text = Text::styled(format_size_opt(e.size), size_style(e.size));
                 size_text.alignment = Some(Alignment::Right);
                 let mut row = Row::new([
@@ -240,6 +242,27 @@ fn format_age(age: std::time::Duration) -> String {
         return "yesterday".to_string();
     }
     timeago::Formatter::new().convert(age)
+}
+
+/// `(build-dir)` / `(target-dir)` tag when one project reports both dirs
+/// in different locations. `None` for single-row projects.
+fn output_suffix(
+    entry: &crate::scan::TargetEntry,
+    entries: &[crate::scan::TargetEntry],
+) -> Option<(&'static str, Color)> {
+    use crate::scan::OutputKind;
+    let (label, color, want) = match entry.kind {
+        OutputKind::Build => (" (build-dir)", Color::Blue, OutputKind::Target),
+        OutputKind::Target => (" (target-dir)", Color::Green, OutputKind::Build),
+    };
+    entries
+        .iter()
+        .any(|other| {
+            other.project_path == entry.project_path
+                && other.kind == want
+                && other.target_dir != entry.target_dir
+        })
+        .then_some((label, color))
 }
 
 /// Timestamp for display; pending entries read as `-`, deleted as "deleted".
@@ -429,10 +452,53 @@ mod tests {
         let pending = TargetEntry {
             project_path: std::path::PathBuf::from("proj-a"),
             target_dir: std::path::PathBuf::from("proj-a/target"),
+            kind: crate::scan::OutputKind::Target,
             size: None,
             last_modified: None,
         };
         assert_eq!(format_modified_entry(&pending), "-");
+    }
+    #[test]
+    fn paired_dirs_get_kind_suffixes_in_blue_and_green() {
+        use crate::scan::{OutputKind, TargetEntry};
+        let entry = |dir: &str, kind: OutputKind| TargetEntry {
+            project_path: std::path::PathBuf::from("proj"),
+            target_dir: std::path::PathBuf::from(dir),
+            kind,
+            size: None,
+            last_modified: None,
+        };
+        let pair = vec![
+            entry("tout", OutputKind::Target),
+            entry("bout", OutputKind::Build),
+        ];
+        assert_eq!(
+            output_suffix(&pair[0], &pair),
+            Some((" (target-dir)", Color::Green))
+        );
+        assert_eq!(
+            output_suffix(&pair[1], &pair),
+            Some((" (build-dir)", Color::Blue))
+        );
+    }
+
+    #[test]
+    fn single_dir_has_no_suffix() {
+        use crate::scan::{OutputKind, TargetEntry};
+        let only = TargetEntry {
+            project_path: std::path::PathBuf::from("proj"),
+            target_dir: std::path::PathBuf::from("proj/target"),
+            kind: OutputKind::Target,
+            size: None,
+            last_modified: None,
+        };
+        assert_eq!(output_suffix(&only, std::slice::from_ref(&only)), None);
+        // Same path twice is one row, not a pair.
+        let dup = TargetEntry {
+            kind: OutputKind::Build,
+            ..only.clone()
+        };
+        assert_eq!(output_suffix(&only, &[only.clone(), dup]), None);
     }
 
     #[test]

@@ -66,6 +66,7 @@ impl App {
                 TargetEntry {
                     project_path: found.project_path,
                     target_dir: found.target_dir,
+                    kind: found.kind,
                     size: None,
                     last_modified: None,
                 }
@@ -185,6 +186,7 @@ impl App {
                 self.build_cache = Some(TargetEntry {
                     project_path: m.target_dir.clone(),
                     target_dir: m.target_dir.clone(),
+                    kind: crate::scan::OutputKind::Target,
                     size: Some(m.size),
                     last_modified: m.last_modified,
                 });
