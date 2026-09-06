@@ -15,6 +15,8 @@ use std::{
 use ignore::{DirEntry, WalkBuilder, WalkState};
 use rayon::prelude::*;
 
+use crate::util::cpu_count;
+
 use super::{
     TargetEntry,
     cargo_config::{DiscoveredEntry, Resolver},
@@ -66,7 +68,7 @@ pub fn discover(root: &Path) -> Vec<DiscoveredEntry> {
         .hidden(false)
         // Apply gitignores even outside a git checkout.
         .require_git(false)
-        .threads(num_cpus::get().max(1))
+        .threads(cpu_count())
         .filter_entry({
             let ctx = Arc::clone(&ctx);
             move |entry| keep_entry(entry, &ctx)

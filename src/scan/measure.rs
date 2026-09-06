@@ -59,8 +59,10 @@ pub(super) fn recursive_scan_target<T: AsRef<Path>>(path: T) -> (u64, Option<Sys
         let Some(rec) = record_entry(&entry) else {
             continue;
         };
+        // Only inodes that can repeat need dedup: files with extra links.
+        // Plain files and dirs skip the set entirely.
         #[cfg(unix)]
-        if !seen.insert((rec.dev, rec.ino)) {
+        if rec.nlink > 1 && !seen.insert((rec.dev, rec.ino)) {
             continue;
         }
         total += rec.size;
@@ -74,6 +76,8 @@ struct EntryRec {
     dev: u64,
     #[cfg(unix)]
     ino: u64,
+    #[cfg(unix)]
+    nlink: u64,
     size: u64,
     mtime_ns: u64,
 }
@@ -86,7 +90,11 @@ fn record_entry(entry: &DirEntry) -> Option<EntryRec> {
         dev: md.dev(),
         #[cfg(unix)]
         ino: md.ino(),
+        // Dirs are visited exactly once (symlinks are never followed and
+        // dirs cannot hardlink), so they need no dedup. Only files with
+        // extra links enter the set.
         #[cfg(unix)]
+        nlink: if md.is_dir() { 1 } else { md.nlink() },
         size: md.blocks() * 512,
         #[cfg(not(unix))]
         size: md.len(),

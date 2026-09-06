@@ -19,14 +19,20 @@ use poll::Poller;
 use scan::resolve_root;
 use ui::input::{Action, handle_key};
 
+use crate::util::cpu_count;
+
 mod app;
 mod args;
 mod poll;
 mod scan;
 mod trace;
 mod ui;
+mod util;
 
 fn main() -> Result<()> {
+    let _ = rayon::ThreadPoolBuilder::new()
+        .num_threads(cpu_count())
+        .build_global();
     let _trace_guard = trace::init();
     let Args { root } = Args::new();
     if !root.is_dir() {
