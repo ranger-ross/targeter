@@ -1,5 +1,7 @@
 # Cargo Shepherd
 
+[![Crates.io](https://img.shields.io/crates/v/cargo-shepherd.svg)](https://crates.io/crates/cargo-shepherd)
+
 Cargo `target` directory management CLI/TUI
 
 <img src="assets/demo.gif" width="800" alt="demo" />
