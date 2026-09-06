@@ -97,6 +97,8 @@ pub fn render(frame: &mut Frame, app: &mut App) {
         );
     } else {
         let selected = app.table_state.selected();
+        // Borders plus header eat three lines. Paging follows the rest.
+        app.page_len = table_area.height.saturating_sub(3).max(1) as usize;
         let header = Row::new([
             Cell::from(sort_header("PROJECT", SortKey::Name, app.sort)),
             Cell::from(right_text(sort_header("SIZE", SortKey::Size, app.sort))),
@@ -607,6 +609,22 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn render_tracks_visible_rows_for_paging() {
+        use ratatui::{Terminal, backend::TestBackend};
+        let mut app = App::new(std::path::PathBuf::from("."));
+        app.set_discovered(vec![
+            std::path::PathBuf::from("proj-a"),
+            std::path::PathBuf::from("proj-b"),
+        ]);
+        app.finish_scan(None);
+        let backend = TestBackend::new(100, 24);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal.draw(|f| render(f, &mut app)).unwrap();
+        // Top and footer take 3 lines each; borders plus header eat 3 more.
+        assert_eq!(app.page_len, 24 - 3 - 3 - 3);
     }
     #[test]
     fn pending_rows_show_loading_in_size_column() {

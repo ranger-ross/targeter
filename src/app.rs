@@ -15,6 +15,8 @@ pub struct App {
     pub scanning: bool,
     pub sort: SortKey,
     pub loading_start: Instant,
+    /// Visible table rows from the last render. Paging follows it.
+    pub page_len: usize,
     /// True once the user moves selection. Suppresses the auto-jump to top.
     pub navigated: bool,
     /// True while the user is typing a filter pattern.
@@ -42,6 +44,7 @@ impl App {
             scanning: true,
             sort: SortKey::default(),
             loading_start: Instant::now(),
+            page_len: 10,
             navigated: false,
             filtering: false,
             filter_text: String::new(),
@@ -245,6 +248,30 @@ impl App {
             self.table_state.select(Some(visible - 1));
         }
     }
+
+    /// Jump forward one screen. Clamps at the end, never wraps.
+    pub fn page_down(&mut self) {
+        self.navigated = true;
+        let visible = self.visible_indices().len();
+        if visible == 0 {
+            return;
+        }
+        let i = self.table_state.selected().unwrap_or(0);
+        self.table_state
+            .select(Some((i + self.page_len.max(1)).min(visible - 1)));
+    }
+
+    /// Jump back one screen. Clamps at the start, never wraps.
+    pub fn page_up(&mut self) {
+        self.navigated = true;
+        if self.visible_indices().is_empty() {
+            return;
+        }
+        let i = self.table_state.selected().unwrap_or(0);
+        self.table_state
+            .select(Some(i.saturating_sub(self.page_len.max(1))));
+    }
+
     /// Delete the selected project's `target/` dir. A missing dir
     /// counts as deleted. Failures surface in `delete_error`.
     /// Selection moves to the row above, or below if the first
@@ -669,5 +696,28 @@ mod tests {
         solo.set_discovered(vec![PathBuf::from("only")]);
         solo.delete_selected();
         assert_eq!(solo.table_state.selected(), Some(0));
+    }
+
+    #[test]
+    fn paging_jumps_one_screen_and_clamps() {
+        let mut app = App::new(PathBuf::from("."));
+        let projects: Vec<PathBuf> = (0..30)
+            .map(|i| PathBuf::from(format!("proj-{i:02}")))
+            .collect();
+        app.set_discovered(projects);
+        app.finish_scan(None);
+        app.page_len = 10;
+        app.table_state.select(Some(0));
+        app.page_down();
+        assert_eq!(app.table_state.selected(), Some(10));
+        app.page_down();
+        assert_eq!(app.table_state.selected(), Some(20));
+        app.page_down();
+        assert_eq!(app.table_state.selected(), Some(29));
+        app.page_up();
+        assert_eq!(app.table_state.selected(), Some(19));
+        app.page_up();
+        app.page_up();
+        assert_eq!(app.table_state.selected(), Some(0));
     }
 }

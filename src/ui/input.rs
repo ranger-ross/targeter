@@ -60,6 +60,14 @@ pub fn handle_key(app: &mut App, key: KeyEvent) -> Action {
             app.previous();
             Action::Continue
         }
+        (KeyCode::PageDown, _) => {
+            app.page_down();
+            Action::Continue
+        }
+        (KeyCode::PageUp, _) => {
+            app.page_up();
+            Action::Continue
+        }
         (KeyCode::Char('g'), _) => {
             app.top();
             Action::Continue
@@ -165,5 +173,27 @@ mod tests {
         assert!(root.join("proj/target").exists());
         assert_eq!(app.filter_text, "d");
         let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn page_keys_jump_one_screen() {
+        let mut app = App::new(PathBuf::from("."));
+        let projects: Vec<PathBuf> = (0..30)
+            .map(|i| PathBuf::from(format!("proj-{i:02}")))
+            .collect();
+        app.set_discovered(projects);
+        app.finish_scan(None);
+        app.page_len = 10;
+        app.table_state.select(Some(0));
+        assert!(matches!(
+            handle_key(&mut app, key(KeyCode::PageDown)),
+            Action::Continue
+        ));
+        assert_eq!(app.table_state.selected(), Some(10));
+        assert!(matches!(
+            handle_key(&mut app, key(KeyCode::PageUp)),
+            Action::Continue
+        ));
+        assert_eq!(app.table_state.selected(), Some(0));
     }
 }
