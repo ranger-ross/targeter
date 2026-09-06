@@ -102,10 +102,32 @@ fn render_table(out: &mut impl Write, shown: &[&TargetEntry], all: &[TargetEntry
     Ok(())
 }
 
-/// Delete entries older than `older_than` and larger than `larger_than`.
-pub fn run_clean(root: &Path, older_than: &str, larger_than: &str, yes: bool) -> Result<()> {
-    let min_age = parse_age(older_than)?;
-    let min_size = parse_size(larger_than)?;
+/// Delete entries matching the given filters. Each filter is independent:
+/// only passed filters constrain. With neither passed, fall back to older
+/// than 30d and larger than 100MB.
+pub fn run_clean(
+    root: &Path,
+    older_than: Option<&str>,
+    larger_than: Option<&str>,
+    yes: bool,
+) -> Result<()> {
+    let (min_age, age_desc) = match older_than {
+        Some(raw) => (Some(parse_age(raw)?), format!("older than {raw}")),
+        None if larger_than.is_none() => (Some(parse_age("30d")?), "older than 30d".to_string()),
+        None => (None, String::new()),
+    };
+    let (min_size, size_desc) = match larger_than {
+        Some(raw) => (Some(parse_size(raw)?), format!("larger than {raw}")),
+        None if older_than.is_none() => {
+            (Some(parse_size("100MB")?), "larger than 100MB".to_string())
+        }
+        None => (None, String::new()),
+    };
+    let desc = [age_desc, size_desc]
+        .into_iter()
+        .filter(|s| !s.is_empty())
+        .collect::<Vec<_>>()
+        .join(" and ");
     let now = SystemTime::now();
     let app = collect(root);
     let candidates: Vec<&TargetEntry> = app
@@ -114,17 +136,12 @@ pub fn run_clean(root: &Path, older_than: &str, larger_than: &str, yes: bool) ->
         .filter(|e| is_candidate(e, now, min_age, min_size))
         .collect();
     if candidates.is_empty() {
-        println!(
-            "Nothing to clean: no target/ dirs older than {older_than} and larger than {larger_than}."
-        );
+        println!("Nothing to clean: no target/ dirs {desc}.");
         return Ok(());
     }
     let reclaim: u64 = candidates.iter().filter_map(|e| e.size).sum();
     let mut out = io::stdout().lock();
-    writeln!(
-        out,
-        "Candidates older than {older_than} and larger than {larger_than}:"
-    )?;
+    writeln!(out, "Candidates {desc}:")?;
     render_table(&mut out, &candidates, &app.entries)?;
     writeln!(
         out,
@@ -166,14 +183,24 @@ pub fn run_clean(root: &Path, older_than: &str, larger_than: &str, yes: bool) ->
     Ok(())
 }
 
-/// A measured entry matches when strictly older and strictly larger.
-fn is_candidate(entry: &TargetEntry, now: SystemTime, min_age: Duration, min_size: u64) -> bool {
-    match (entry.size, entry.last_modified) {
-        (Some(size), Some(modified)) => {
-            size > min_size && now.duration_since(modified).unwrap_or_default() > min_age
-        }
-        _ => false,
-    }
+/// A present filter must match strictly; an absent filter never blocks.
+fn is_candidate(
+    entry: &TargetEntry,
+    now: SystemTime,
+    min_age: Option<Duration>,
+    min_size: Option<u64>,
+) -> bool {
+    let size_ok = match (entry.size, min_size) {
+        (_, None) => true,
+        (Some(size), Some(min)) => size > min,
+        (None, Some(_)) => false,
+    };
+    let age_ok = match (entry.last_modified, min_age) {
+        (_, None) => true,
+        (Some(modified), Some(min)) => now.duration_since(modified).unwrap_or_default() > min,
+        (None, Some(_)) => false,
+    };
+    size_ok && age_ok
 }
 
 fn confirm(prompt: &str) -> Result<bool> {
@@ -209,7 +236,9 @@ pub fn parse_size(raw: &str) -> Result<u64> {
     Ok((num * mult as f64).round() as u64)
 }
 
-/// Parse ages like `30d`, `12h`, `90m`. A bare number means days.
+/// Parse ages like `30d`, `6mo`, `1y`. A bare number means days.
+/// Months read as 30 days and years as 365 days. `m` stays minutes;
+/// months need `mo` or longer.
 pub fn parse_age(raw: &str) -> Result<Duration> {
     let s = raw.trim().to_lowercase().replace(' ', "");
     if s.is_empty() {
@@ -227,7 +256,9 @@ pub fn parse_age(raw: &str) -> Result<Duration> {
         "m" | "min" | "mins" | "minute" | "minutes" => 60.0,
         "h" | "hour" | "hours" => 3600.0,
         "w" | "week" | "weeks" => 7.0 * 86_400.0,
-        _ => eyre::bail!("invalid age unit in {raw:?}: use s, m, h, d, or w"),
+        "mo" | "mon" | "mons" | "month" | "months" => 30.0 * 86_400.0,
+        "y" | "yr" | "yrs" | "year" | "years" => 365.0 * 86_400.0,
+        _ => eyre::bail!("invalid age unit in {raw:?}: use s, m, h, d, w, mo, or y"),
     };
     Ok(Duration::from_secs((num * secs_per).round() as u64))
 }
@@ -264,9 +295,28 @@ mod tests {
     }
 
     #[test]
+    fn months_and_years_use_fixed_lengths() {
+        assert_eq!(
+            parse_age("6mo").unwrap(),
+            Duration::from_secs(6 * 30 * 86_400)
+        );
+        assert_eq!(
+            parse_age("2 months").unwrap(),
+            Duration::from_secs(2 * 30 * 86_400)
+        );
+        assert_eq!(parse_age("1y").unwrap(), Duration::from_secs(365 * 86_400));
+        assert_eq!(
+            parse_age("2years").unwrap(),
+            Duration::from_secs(2 * 365 * 86_400)
+        );
+        // `m` stays minutes; months need `mo` or longer.
+        assert_eq!(parse_age("90m").unwrap(), Duration::from_secs(90 * 60));
+    }
+
+    #[test]
     fn bad_ages_fail() {
         assert!(parse_age("").is_err());
-        assert!(parse_age("10y").is_err());
+        assert!(parse_age("10x").is_err());
     }
 
     fn entry(size: Option<u64>, age: Option<Duration>) -> TargetEntry {
@@ -282,17 +332,44 @@ mod tests {
     #[test]
     fn candidates_need_both_age_and_size() {
         let now = SystemTime::now();
-        let min_age = Duration::from_secs(30 * 86_400);
-        let min_size = 100 * 1024 * 1024;
-        let old_big = entry(Some(min_size + 1), Some(min_age + Duration::from_secs(1)));
+        let min_age = Some(Duration::from_secs(30 * 86_400));
+        let min_size = Some(100 * 1024 * 1024);
+        let old_big = entry(
+            Some(100 * 1024 * 1024 + 1),
+            Some(Duration::from_secs(31 * 86_400)),
+        );
         assert!(is_candidate(&old_big, now, min_age, min_size));
         // Boundary values do not match: strictly older and strictly larger.
-        let edge = entry(Some(min_size), Some(min_age));
+        let edge = entry(
+            Some(100 * 1024 * 1024),
+            Some(Duration::from_secs(30 * 86_400)),
+        );
         assert!(!is_candidate(&edge, now, min_age, min_size));
-        let fresh = entry(Some(min_size + 1), Some(Duration::from_secs(1)));
+        let fresh = entry(Some(100 * 1024 * 1024 + 1), Some(Duration::from_secs(1)));
         assert!(!is_candidate(&fresh, now, min_age, min_size));
-        let small = entry(Some(1), Some(min_age + Duration::from_secs(1)));
+        let small = entry(Some(1), Some(Duration::from_secs(31 * 86_400)));
         assert!(!is_candidate(&small, now, min_age, min_size));
         assert!(!is_candidate(&entry(None, None), now, min_age, min_size));
+    }
+
+    #[test]
+    fn single_filter_ignores_the_other() {
+        let now = SystemTime::now();
+        let fresh_big = entry(Some(10 * 1024 * 1024 * 1024), Some(Duration::from_secs(1)));
+        // Size-only run matches fresh dirs; the age default must not apply.
+        assert!(is_candidate(
+            &fresh_big,
+            now,
+            None,
+            Some(1024 * 1024 * 1024)
+        ));
+        let old_small = entry(Some(1), Some(Duration::from_secs(31 * 86_400)));
+        // Age-only run matches small dirs; the size default must not apply.
+        assert!(is_candidate(
+            &old_small,
+            now,
+            Some(Duration::from_secs(30 * 86_400)),
+            None
+        ));
     }
 }

@@ -28,12 +28,14 @@ pub enum Command {
     Clean {
         /// Directory to scan. Defaults to the home directory.
         root: Option<PathBuf>,
-        /// Only candidates older than this age match (e.g. 30d, 12h).
-        #[arg(long, default_value = "30d")]
-        older_than: String,
-        /// Only candidates larger than this size match (e.g. 100MB, 1GiB).
-        #[arg(long, default_value = "100MB")]
-        larger_than: String,
+        /// Only candidates older than this age match (e.g. 30d, 6mo, 1y).
+        /// Defaults to 30d if no filters are given.
+        #[arg(long)]
+        older_than: Option<String>,
+        /// Only candidates larger than this size match (e.g. 100MB, 1G).
+        /// Defaults to 100MB if no filters are given.
+        #[arg(long)]
+        larger_than: Option<String>,
         /// Delete without prompting for confirmation.
         #[arg(long, short = 'y')]
         yes: bool,

@@ -57,7 +57,8 @@ fn main() -> Result<()> {
         }) => {
             let root = resolve_root(&Args::root_for(root.clone(), args.root.clone()));
             check_root(&root)?;
-            let result = headless::run_clean(&root, older_than, larger_than, *yes);
+            let result =
+                headless::run_clean(&root, older_than.as_deref(), larger_than.as_deref(), *yes);
             if let Some(guard) = _trace_guard.as_ref() {
                 eprintln!("Trace written to {}", guard.path.display());
             }
