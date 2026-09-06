@@ -3,6 +3,16 @@
 Cargo `target` directory management CLI/TUI
 
 
+## Features
+
+* Very fast directory discovery
+* Management TUI with realtime updates
+* Headless mode for listing and cleaning
+* `clean` command with reasonable defaults
+* Support for `.cargo/config.toml` overrides. (best effort)
+* Support for both Cargo `build-dir` and `target-dir`
+
+
 ## Installation
 
 ```shell
