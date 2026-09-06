@@ -357,14 +357,6 @@ impl SortKey {
             Self::Name => Self::Size,
         }
     }
-
-    pub fn label(self) -> &'static str {
-        match self {
-            Self::Size => "size",
-            Self::Modified => "modified",
-            Self::Name => "name",
-        }
-    }
 }
 
 #[cfg(test)]

@@ -7,7 +7,7 @@ use ratatui::{
     widgets::{Cell, HighlightSpacing, Paragraph, Row, Table},
 };
 
-use crate::app::App;
+use crate::app::{App, SortKey};
 
 pub mod input;
 mod loading;
@@ -98,9 +98,9 @@ pub fn render(frame: &mut Frame, app: &mut App) {
     } else {
         let selected = app.table_state.selected();
         let header = Row::new([
-            Cell::from("PROJECT"),
-            Cell::from(right_text("SIZE")),
-            Cell::from("MODIFIED"),
+            Cell::from(sort_header("PROJECT", SortKey::Name, app.sort)),
+            Cell::from(right_text(sort_header("SIZE", SortKey::Size, app.sort))),
+            Cell::from(sort_header("MODIFIED", SortKey::Modified, app.sort)),
             Cell::from("PATH"),
         ])
         .height(1)
@@ -164,6 +164,17 @@ pub fn render(frame: &mut Frame, app: &mut App) {
     }
     render_footer(frame, footer_area, app);
 }
+/// Sorted column earns an arrow. Name sorts A-Z, size and modified newest-first.
+fn sort_header(label: &str, key: SortKey, sort: SortKey) -> String {
+    if key != sort {
+        return label.to_string();
+    }
+    match key {
+        SortKey::Name => format!("{label} ▲"),
+        SortKey::Size | SortKey::Modified => format!("{label} ▼"),
+    }
+}
+
 /// Right-aligned cell text, for the Size column and its header.
 fn right_text(text: impl Into<String>) -> Text<'static> {
     let mut t = Text::from(text.into());
@@ -346,7 +357,7 @@ fn footer_actions(app: &App) -> (Vec<Span<'static>>, Vec<Span<'static>>) {
     left.extend(hint("↑↓", "Navigate".to_string()));
     left.extend(hint("g/G", "Top/Bottom".to_string()));
     left.extend(hint("/", "Filter".to_string()));
-    left.extend(hint("s", format!("Sort: {}", app.sort.label())));
+    left.extend(hint("s", "Sort".to_string()));
     left.extend(hint("r", "Rescan".to_string()));
     left.extend(hint("d", "Delete".to_string()));
     left.extend(hint("q", "Quit".to_string()));
@@ -527,13 +538,14 @@ mod tests {
             "Navigate",
             "Top/Bottom",
             "Filter",
-            "Sort: size",
+            "Sort",
             "Rescan",
             "Delete",
             "Quit",
         ] {
             assert!(text.contains(want), "missing {want}");
         }
+        assert!(!text.contains("Sort:"), "sort type moved to column header");
         assert!(!text.contains("(s)"), "duplicated sort key hint");
     }
 
@@ -557,8 +569,43 @@ mod tests {
             }
             text.push('\n');
         }
-        for want in ["PROJECT", "SIZE", "MODIFIED", "PATH", "▶"] {
+        for want in ["PROJECT", "SIZE ▼", "MODIFIED", "PATH", "▶"] {
             assert!(text.contains(want), "missing {want}");
+        }
+    }
+
+    #[test]
+    fn sort_indicator_follows_sort_key() {
+        use ratatui::{Terminal, backend::TestBackend};
+        let mut app = App::new(std::path::PathBuf::from("."));
+        app.set_discovered(vec![
+            std::path::PathBuf::from("proj-a"),
+            std::path::PathBuf::from("proj-b"),
+        ]);
+        app.finish_scan(None);
+        for (key, want) in [
+            (SortKey::Size, "SIZE ▼"),
+            (SortKey::Modified, "MODIFIED ▼"),
+            (SortKey::Name, "PROJECT ▲"),
+        ] {
+            app.sort = key;
+            let backend = TestBackend::new(100, 24);
+            let mut terminal = Terminal::new(backend).unwrap();
+            terminal.draw(|f| render(f, &mut app)).unwrap();
+            let buf = terminal.backend().buffer().clone();
+            let mut text = String::new();
+            for y in 0..buf.area.height {
+                for x in 0..buf.area.width {
+                    text.push_str(buf[(x, y)].symbol());
+                }
+                text.push('\n');
+            }
+            assert!(text.contains(want), "missing {want}");
+            for other in ["SIZE ▼", "MODIFIED ▼", "PROJECT ▲"] {
+                if other != want {
+                    assert!(!text.contains(other), "stale indicator {other}");
+                }
+            }
         }
     }
     #[test]
