@@ -40,3 +40,10 @@ cargo shepherd clean
 cargo shepherd --help
 ```
 
+## Motivation / Scope
+
+This project was motivated primarily by me needing a way to monitor directory sizes while working on a
+cross workspace cache for Cargo. Other solutions existed but they primarily focused on cleaning up unused `target` directories.
+I set out just to solve my problem but added on some additional features like cleaning up old target dirs since it was fairly easy
+to do so once the core was in place. In the future I'd like to make this tool a general management solution for Cargo's on disc files.
+If you have an idea or issue, please raise it on the GitHub issue tracker.
