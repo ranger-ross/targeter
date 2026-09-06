@@ -163,6 +163,24 @@ pub fn render(frame: &mut Frame, app: &mut App) {
             .highlight_symbol("▶ ")
             .highlight_spacing(HighlightSpacing::Always);
         frame.render_stateful_widget(table, table_area, &mut app.table_state);
+        // Position floats at the far right of the header line, over the
+        // blank end of the PATH column. PATH itself stays left-aligned.
+        let pos = format!("({}/{})", selected.unwrap_or(0) + 1, visible.len());
+        if table_area.width > pos.len() as u16 + 4 {
+            let area = Rect {
+                x: table_area.x + table_area.width - pos.len() as u16 - 2,
+                y: table_area.y + 1,
+                width: pos.len() as u16,
+                height: 1,
+            };
+            frame.render_widget(
+                Paragraph::new(Span::styled(
+                    pos,
+                    Style::default().fg(crate::ui::theme::DIM),
+                )),
+                area,
+            );
+        }
     }
     render_footer(frame, footer_area, app);
 }
@@ -626,6 +644,46 @@ mod tests {
         // Top and footer take 3 lines each; borders plus header eat 3 more.
         assert_eq!(app.page_len, 24 - 3 - 3 - 3);
     }
+
+    #[test]
+    fn table_shows_position_indicator_inline_with_header() {
+        use ratatui::{Terminal, backend::TestBackend};
+        let mut app = App::new(std::path::PathBuf::from("."));
+        app.set_discovered(vec![
+            std::path::PathBuf::from("proj-a"),
+            std::path::PathBuf::from("proj-b"),
+        ]);
+        app.finish_scan(None);
+        let backend = TestBackend::new(100, 24);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let header_line = |terminal: &mut Terminal<TestBackend>, app: &mut App| {
+            terminal.draw(|f| render(f, app)).unwrap();
+            let buf = terminal.backend().buffer().clone();
+            let mut header = String::new();
+            for y in 0..buf.area.height {
+                let mut line = String::new();
+                for x in 0..buf.area.width {
+                    line.push_str(buf[(x, y)].symbol());
+                }
+                if line.contains("PROJECT") {
+                    header = line;
+                }
+            }
+            header
+        };
+        let line = header_line(&mut terminal, &mut app);
+        assert!(line.contains("(1/2)"), "first row readout on header line");
+        assert!(
+            line.find("PATH") < line.find("(1/2)"),
+            "readout floats right of the PATH label"
+        );
+        app.next();
+        assert!(
+            header_line(&mut terminal, &mut app).contains("(2/2)"),
+            "second row readout sits on the header line"
+        );
+    }
+
     #[test]
     fn pending_rows_show_loading_in_size_column() {
         use ratatui::{Terminal, backend::TestBackend};
