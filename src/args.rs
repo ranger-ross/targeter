@@ -1,12 +1,43 @@
 use std::path::PathBuf;
 
-use clap::Parser;
+use clap::{Parser, Subcommand};
 
 #[derive(Parser, Debug)]
 #[command(name = "cargo-shepherd", about = "Cargo target directory management")]
 pub struct Args {
     /// Directory to scan. Defaults to the home directory.
     pub root: Option<PathBuf>,
+
+    #[command(subcommand)]
+    pub command: Option<Command>,
+}
+
+#[derive(Subcommand, Debug, Clone)]
+pub enum Command {
+    /// Launch the interactive browser
+    Tui {
+        /// Directory to scan. Defaults to the home directory.
+        root: Option<PathBuf>,
+    },
+    /// List target dirs on the system.
+    List {
+        /// Directory to scan. Defaults to the home directory.
+        root: Option<PathBuf>,
+    },
+    /// Delete target dirs older than a max age and larger than a min size.
+    Clean {
+        /// Directory to scan. Defaults to the home directory.
+        root: Option<PathBuf>,
+        /// Only candidates older than this age match (e.g. 30d, 12h).
+        #[arg(long, default_value = "30d")]
+        older_than: String,
+        /// Only candidates larger than this size match (e.g. 100MB, 1GiB).
+        #[arg(long, default_value = "100MB")]
+        larger_than: String,
+        /// Delete without prompting for confirmation.
+        #[arg(long, short = 'y')]
+        yes: bool,
+    },
 }
 
 impl Args {
@@ -18,8 +49,10 @@ impl Args {
         <Self as Parser>::parse_from(argv)
     }
 
-    pub fn root(&self) -> PathBuf {
-        self.root.clone().unwrap_or_else(|| {
+    /// Scan root for the requested subcommand. A root on the subcommand
+    /// wins over the legacy top-level positional.
+    pub fn root_for(cmd_root: Option<PathBuf>, top_root: Option<PathBuf>) -> PathBuf {
+        cmd_root.or(top_root).unwrap_or_else(|| {
             homedir::my_home()
                 .ok()
                 .flatten()

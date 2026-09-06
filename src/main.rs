@@ -5,7 +5,7 @@ use std::{
 };
 
 use app::App;
-use args::Args;
+use args::{Args, Command};
 use crossterm::{
     event::{self, Event},
     execute,
@@ -23,6 +23,7 @@ use crate::util::cpu_count;
 
 mod app;
 mod args;
+mod headless;
 mod poll;
 mod scan;
 mod trace;
@@ -34,11 +35,37 @@ fn main() -> Result<()> {
         .num_threads(cpu_count())
         .build_global();
     let _trace_guard = trace::init();
-    let root = Args::parse_args().root();
-    if !root.is_dir() {
-        eyre::bail!("scan root is not a directory: {}", root.display());
-    }
+    let args = Args::parse_args();
+    // TUI is the default when no subcommand is given.
+    let root = match &args.command {
+        None => Args::root_for(args.root.clone(), None),
+        Some(Command::Tui { root }) => Args::root_for(root.clone(), args.root.clone()),
+        Some(Command::List { root }) => {
+            let root = resolve_root(&Args::root_for(root.clone(), args.root.clone()));
+            check_root(&root)?;
+            let result = headless::run_list(&root);
+            if let Some(guard) = _trace_guard.as_ref() {
+                eprintln!("Trace written to {}", guard.path.display());
+            }
+            return result;
+        }
+        Some(Command::Clean {
+            root,
+            older_than,
+            larger_than,
+            yes,
+        }) => {
+            let root = resolve_root(&Args::root_for(root.clone(), args.root.clone()));
+            check_root(&root)?;
+            let result = headless::run_clean(&root, older_than, larger_than, *yes);
+            if let Some(guard) = _trace_guard.as_ref() {
+                eprintln!("Trace written to {}", guard.path.display());
+            }
+            return result;
+        }
+    };
     let root = resolve_root(&root);
+    check_root(&root)?;
 
     enable_raw_mode().wrap_err("enabling terminal raw mode")?;
     let mut stdout = std::io::stdout();
@@ -56,6 +83,13 @@ fn main() -> Result<()> {
     }
 
     result
+}
+
+fn check_root(root: &Path) -> Result<()> {
+    if !root.is_dir() {
+        eyre::bail!("scan root is not a directory: {}", root.display());
+    }
+    Ok(())
 }
 
 fn run(terminal: &mut Terminal<CrosstermBackend<std::io::Stdout>>, root: PathBuf) -> Result<()> {

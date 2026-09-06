@@ -218,12 +218,12 @@ fn size_style(size: Option<u64>) -> Style {
 }
 
 /// Binary-unit sizes matching `du -h`. Unmeasured entries read as `-`.
-fn format_size_opt(size: Option<u64>) -> String {
+pub(crate) fn format_size_opt(size: Option<u64>) -> String {
     size.map_or_else(|| "-".to_string(), format_size)
 }
 
 /// Binary-unit sizes matching `du -h`.
-fn format_size(bytes: u64) -> String {
+pub(crate) fn format_size(bytes: u64) -> String {
     const KIB: u64 = 1024;
     const MIB: u64 = 1024 * KIB;
     const GIB: u64 = 1024 * MIB;
@@ -242,7 +242,7 @@ fn format_size(bytes: u64) -> String {
 }
 
 /// Absolute path for display, with `$HOME` contracted to `~`.
-fn display_path(path: &std::path::Path) -> String {
+pub(crate) fn display_path(path: &std::path::Path) -> String {
     let abs = std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
     if let Ok(home) = std::env::var("HOME")
         && !home.is_empty()
@@ -283,7 +283,7 @@ fn format_age(age: std::time::Duration) -> String {
 
 /// `(build-dir)` / `(target-dir)` tag when one project reports both dirs
 /// in different locations. `None` for single-row projects.
-fn output_suffix(
+pub(crate) fn output_suffix(
     entry: &crate::scan::TargetEntry,
     entries: &[crate::scan::TargetEntry],
 ) -> Option<(&'static str, Color)> {
@@ -303,7 +303,7 @@ fn output_suffix(
 }
 
 /// Timestamp for display; pending entries read as `-`, deleted as "deleted".
-fn format_modified_entry(entry: &crate::scan::TargetEntry) -> String {
+pub(crate) fn format_modified_entry(entry: &crate::scan::TargetEntry) -> String {
     if entry.size.is_none() {
         return "-".to_string();
     }
@@ -311,7 +311,7 @@ fn format_modified_entry(entry: &crate::scan::TargetEntry) -> String {
 }
 
 /// Timestamp for display; deleted dirs read as "deleted".
-fn format_modified_opt(last_modified: Option<std::time::SystemTime>) -> String {
+pub(crate) fn format_modified_opt(last_modified: Option<std::time::SystemTime>) -> String {
     match last_modified {
         Some(t) => format_modified(t),
         None => "deleted".to_string(),
