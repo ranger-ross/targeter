@@ -23,6 +23,8 @@ const SEMI_INTERVAL: Duration = Duration::from_secs(30);
 const SEMI_QUIET_LIMIT: u32 = 6;
 /// Dormant dirs poll slowest until a change wakes them.
 const DORMANT_INTERVAL: Duration = Duration::from_secs(60);
+/// mtime age past which a dir skips Unknown and starts Dormant.
+const STALE_AFTER: Duration = Duration::from_secs(30 * 24 * 3600);
 
 /// Owns poll tiers and the background re-measure pipeline.
 pub struct Poller {
@@ -67,17 +69,27 @@ impl Poller {
             }
         }
         // Stagger first polls across one interval instead of one spike.
+        let wall = SystemTime::now();
         let n = dirs.len().max(1) as u64;
-        let interval_ms = UNKNOWN_INTERVAL.as_millis() as u64;
         self.tracked = dirs
             .into_iter()
             .enumerate()
-            .map(|(i, (target_dir, size, last_modified))| Tracked {
-                target_dir,
-                tier: Tier::Unknown(0),
-                next_due: now + Duration::from_millis((i as u64 + 1) * interval_ms / n),
-                last_size: size,
-                last_modified,
+            .map(|(i, (target_dir, size, last_modified))| {
+                let stale = last_modified
+                    .is_some_and(|m| wall.duration_since(m).is_ok_and(|age| age >= STALE_AFTER));
+                let tier = if stale {
+                    Tier::Dormant
+                } else {
+                    Tier::Unknown(0)
+                };
+                let interval_ms = tier.interval().as_millis() as u64;
+                Tracked {
+                    target_dir,
+                    tier,
+                    next_due: now + Duration::from_millis((i as u64 + 1) * interval_ms / n),
+                    last_size: size,
+                    last_modified,
+                }
             })
             .collect();
     }
@@ -223,7 +235,18 @@ mod tests {
             last_modified: None,
         }
     }
+
     fn measurement(proj: &str, size: u64) -> Measurement {
+        static FRESH: std::sync::LazyLock<SystemTime> =
+            std::sync::LazyLock::new(|| SystemTime::now() - Duration::from_secs(3600));
+        Measurement {
+            target_dir: target_dir(proj),
+            size,
+            last_modified: Some(*FRESH),
+        }
+    }
+
+    fn stale_measurement(proj: &str, size: u64) -> Measurement {
         Measurement {
             target_dir: target_dir(proj),
             size,
@@ -359,5 +382,26 @@ mod tests {
         // Manual rescan restarts at Unknown with fresh baselines.
         poller.reset_at(&app2, now);
         assert_eq!(tier_of(&poller, "proj-a"), Tier::Unknown(0));
+    }
+
+    #[test]
+    fn stale_dir_skips_unknown_straight_to_dormant() {
+        let root = test_root();
+        std::fs::create_dir_all(root.join("proj-old").join("target")).unwrap();
+        let mut app = App::new(root.clone());
+        app.set_discovered(vec![root.join("proj-old")]);
+        app.apply_measurements(&[stale_measurement("proj-old", 100)]);
+        app.finish_scan(None);
+        app.build_cache_path = None;
+        let mut poller = Poller::new();
+        let now = Instant::now();
+        poller.reset_at(&app, now);
+        assert_eq!(tier_of(&poller, "proj-old"), Tier::Dormant);
+        // First poll rides the slow cadence, skipping the Unknown burst.
+        assert!(poller.due_targets(now + UNKNOWN_INTERVAL).is_empty());
+        assert_eq!(poller.due_targets(now + DORMANT_INTERVAL).len(), 1);
+        // A change still wakes it straight to Active.
+        poller.apply(vec![stale_measurement("proj-old", 200)], &mut app, now);
+        assert_eq!(tier_of(&poller, "proj-old"), Tier::Active);
     }
 }
