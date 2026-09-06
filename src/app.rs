@@ -274,8 +274,8 @@ impl App {
 
     /// Delete the selected project's `target/` dir. A missing dir
     /// counts as deleted. Failures surface in `delete_error`.
-    /// Selection moves to the row above, or below if the first
-    /// row was deleted. A lone row keeps selection.
+    /// Selection moves to the row below. Deleting the last row
+    /// keeps selection. A lone row keeps selection.
     pub fn delete_selected(&mut self) {
         self.navigated = true;
         let visible = self.visible_indices();
@@ -285,10 +285,10 @@ impl App {
         let Some(target_dir) = self.entries.get(entry_idx).map(|e| e.target_dir.clone()) else {
             return;
         };
-        // Neighbor by identity, so the resort below cannot lose it.
+        // Neighbor below by identity, so the resort below cannot lose it.
+        // No row below keeps the current selection.
         let neighbor_idx = match sel {
-            Some(0) => visible.get(1).copied(),
-            Some(i) => visible.get(i - 1).copied(),
+            Some(i) => visible.get(i + 1).copied(),
             None => None,
         };
         let neighbor = neighbor_idx.and_then(|i| self.entries.get(i).map(|e| e.target_dir.clone()));
@@ -672,7 +672,7 @@ mod tests {
     }
 
     #[test]
-    fn delete_selected_moves_to_neighbor_row() {
+    fn delete_selected_moves_down_or_keeps_last() {
         let selected_project = |app: &App| {
             app.table_state
                 .selected()
@@ -681,15 +681,46 @@ mod tests {
                 .map(|e| e.project_path.clone())
                 .expect("selection kept")
         };
-        // Deleting the last row moves up. Fake paths miss on disk,
+        // Deleting the first row moves down. Fake paths miss on disk,
         // which counts as deleted.
+        let mut app = app_with_entries();
+        app.table_state.select(Some(0));
+        app.delete_selected();
+        assert_eq!(selected_project(&app), PathBuf::from("proj-small"));
+        // Deleting a middle row moves down, not up.
+        let mut app = App::new(PathBuf::from("."));
+        app.set_discovered(vec![
+            PathBuf::from("proj-big"),
+            PathBuf::from("proj-mid"),
+            PathBuf::from("proj-small"),
+        ]);
+        app.apply_measurements(&[
+            Measurement {
+                target_dir: PathBuf::from("proj-big/target"),
+                size: 100,
+                last_modified: Some(SystemTime::UNIX_EPOCH),
+            },
+            Measurement {
+                target_dir: PathBuf::from("proj-mid/target"),
+                size: 50,
+                last_modified: Some(SystemTime::UNIX_EPOCH),
+            },
+            Measurement {
+                target_dir: PathBuf::from("proj-small/target"),
+                size: 10,
+                last_modified: Some(SystemTime::UNIX_EPOCH),
+            },
+        ]);
+        app.finish_scan(None);
+        app.navigated = true;
+        app.table_state.select(Some(1));
+        app.delete_selected();
+        assert_eq!(selected_project(&app), PathBuf::from("proj-small"));
+        // Deleting the last row keeps selection on the deleted row.
         let mut app = app_with_entries();
         app.table_state.select(Some(1));
         app.delete_selected();
-        assert_eq!(selected_project(&app), PathBuf::from("proj-big"));
-        // Deleting the first row moves down.
-        app.table_state.select(Some(0));
-        app.delete_selected();
+        assert_eq!(app.table_state.selected(), Some(1));
         assert_eq!(selected_project(&app), PathBuf::from("proj-small"));
         // A lone row keeps selection.
         let mut solo = App::new(PathBuf::from("."));
