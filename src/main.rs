@@ -4,7 +4,8 @@ use std::{
     time::Duration,
 };
 
-use clap::Parser;
+use app::App;
+use args::Args;
 use crossterm::{
     event::{self, Event},
     execute,
@@ -14,8 +15,6 @@ use eyre::{Context, Result};
 use ratatui::Terminal;
 use ratatui::backend::CrosstermBackend;
 
-use app::App;
-use args::Args;
 use poll::Poller;
 use scan::resolve_root;
 use ui::input::{Action, handle_key};
@@ -35,7 +34,7 @@ fn main() -> Result<()> {
         .num_threads(cpu_count())
         .build_global();
     let _trace_guard = trace::init();
-    let root = Args::parse().root();
+    let root = Args::parse_args().root();
     if !root.is_dir() {
         eyre::bail!("scan root is not a directory: {}", root.display());
     }
