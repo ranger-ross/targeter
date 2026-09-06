@@ -2,6 +2,7 @@
 
 Cargo `target` directory management CLI/TUI
 
+<img src="assets/demo.gif" width="800" alt="demo" />
 
 ## Features
 
