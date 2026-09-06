@@ -4,9 +4,9 @@ use tracing_chrome::ChromeLayerBuilder;
 use tracing_subscriber::prelude::*;
 
 /// Env var gating Perfetto-compatible trace output.
-pub const ENV_VAR: &str = "TARGETER_TRACING";
+pub const ENV_VAR: &str = "CARGO_SHEPHERD_TRACING";
 /// Trace path used when the env var enables tracing without naming a file.
-pub const DEFAULT_PATH: &str = "targeter-trace.json";
+pub const DEFAULT_PATH: &str = "cargo-shepherd-trace.json";
 
 /// Held for the program lifetime. Dropping it flushes the trace file.
 pub struct TraceGuard {
@@ -32,7 +32,10 @@ pub fn init() -> Option<TraceGuard> {
         .include_locations(true)
         .build();
     let _ = tracing_subscriber::registry().with(layer).try_init();
-    eprintln!("TARGETER_TRACING: writing trace to {}", path.display());
+    eprintln!(
+        "CARGO_SHEPHERD_TRACING: writing trace to {}",
+        path.display()
+    );
     Some(TraceGuard {
         _guard: guard,
         path,

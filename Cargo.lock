@@ -177,6 +177,26 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "95832e849adfb21180ccb6826a99da14e5d266ae5c2e668e1602cf234f153797"
 
 [[package]]
+name = "cargo-shepherd"
+version = "0.1.0"
+dependencies = [
+ "bytefmt",
+ "clap",
+ "crossterm",
+ "eyre",
+ "homedir",
+ "ignore",
+ "num_cpus",
+ "ratatui",
+ "rayon",
+ "regex",
+ "timeago",
+ "tracing",
+ "tracing-chrome",
+ "tracing-subscriber",
+]
+
+[[package]]
 name = "castaway"
 version = "0.2.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1573,26 +1593,6 @@ dependencies = [
  "proc-macro2",
  "quote",
  "unicode-ident",
-]
-
-[[package]]
-name = "targeter"
-version = "0.1.0"
-dependencies = [
- "bytefmt",
- "clap",
- "crossterm",
- "eyre",
- "homedir",
- "ignore",
- "num_cpus",
- "ratatui",
- "rayon",
- "regex",
- "timeago",
- "tracing",
- "tracing-chrome",
- "tracing-subscriber",
 ]
 
 [[package]]
