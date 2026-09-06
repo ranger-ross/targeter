@@ -4,6 +4,7 @@ use std::{
     time::Duration,
 };
 
+use clap::Parser;
 use crossterm::{
     event::{self, Event},
     execute,
@@ -34,7 +35,7 @@ fn main() -> Result<()> {
         .num_threads(cpu_count())
         .build_global();
     let _trace_guard = trace::init();
-    let Args { root } = Args::new();
+    let root = Args::parse().root();
     if !root.is_dir() {
         eyre::bail!("scan root is not a directory: {}", root.display());
     }
