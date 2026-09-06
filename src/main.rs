@@ -6,6 +6,8 @@ use std::{
 
 use app::App;
 use args::{Args, Command};
+use clap::CommandFactory;
+use clap_complete::generate;
 use crossterm::{
     event::{self, Event},
     execute,
@@ -63,6 +65,11 @@ fn main() -> Result<()> {
                 eprintln!("Trace written to {}", guard.path.display());
             }
             return result;
+        }
+        Some(Command::Completions { shell }) => {
+            let mut cmd = Args::command();
+            generate(*shell, &mut cmd, "cargo-shepherd", &mut std::io::stdout());
+            return Ok(());
         }
     };
     let root = resolve_root(&root);

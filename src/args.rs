@@ -40,6 +40,11 @@ pub enum Command {
         #[arg(long, short = 'y')]
         yes: bool,
     },
+    /// Print shell completions to stdout.
+    Completions {
+        /// Shell to generate completions for.
+        shell: clap_complete::Shell,
+    },
 }
 
 impl Args {
