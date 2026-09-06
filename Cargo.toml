@@ -16,7 +16,6 @@ crossterm = "0.29"
 eyre = "0.6"
 timeago = { version = "0.6", default-features = false }
 bytefmt = "0.1"
-num_cpus = "1.16"
 regex = "1"
 tracing = "0.1"
 tracing-chrome = "0.7"
